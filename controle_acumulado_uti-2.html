@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Controle Acumulado — UTI</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1720;
+    --panel:#16212c;
+    --panel2:#1c2b38;
+    --line:#2a3b48;
+    --text:#e6edf3;
+    --muted:#8fa3b3;
+    --accent:#2fb4a3;
+    --accent2:#e0a458;
+    --danger:#d9694f;
+    --mono:'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    padding:24px;
+  }
+  h1{font-size:20px; margin:0 0 2px 0; font-weight:600;}
+  .sub{color:var(--muted); font-size:13px; margin-bottom:20px;}
+  .card{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:16px; margin-bottom:18px;
+  }
+  .card h2{
+    font-size:13px; text-transform:uppercase; letter-spacing:0.08em;
+    color:var(--accent); margin:0 0 12px 0; font-weight:700;
+  }
+  .dropzone{
+    border:2px dashed var(--line); border-radius:10px; padding:28px;
+    text-align:center; color:var(--muted); cursor:pointer;
+    transition:border-color .15s, color .15s;
+  }
+  .dropzone.drag{ border-color:var(--accent); color:var(--accent); }
+  .dropzone input{ display:none; }
+  #status{ font-size:13px; color:var(--muted); margin-top:10px; min-height:18px; }
+  #status.err{ color:var(--danger); }
+  #status.ok{ color:var(--accent); }
+
+  .review-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:12px; }
+  .field label{ display:block; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px; }
+  .field input{
+    width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+    padding:7px 8px; color:var(--text); font-family:var(--mono); font-size:13px;
+  }
+  .minmax{ display:flex; gap:6px; }
+  .minmax input{ width:50%; }
+
+  button{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    padding:9px 16px; border-radius:6px; font-size:13px; cursor:pointer;
+  }
+  button:hover{ border-color:var(--accent); color:var(--accent); }
+  button.primary{ background:var(--accent); border-color:var(--accent); color:#04211d; font-weight:600; }
+  button.primary:hover{ opacity:.9; color:#04211d; }
+  button.danger:hover{ border-color:var(--danger); color:var(--danger); }
+
+  .patient-block{ border-left:3px solid var(--accent); }
+  .patient-head{ display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  .patient-head .name{ font-size:16px; font-weight:600; }
+  .patient-head .meta{ font-size:12px; color:var(--muted); }
+  .cumulative{ display:flex; gap:18px; flex-wrap:wrap; margin-bottom:14px; }
+  .cumulative .stat{ background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .cumulative .stat .label{ font-size:10px; color:var(--muted); text-transform:uppercase; }
+  .cumulative .stat .value{ font-family:var(--mono); font-size:15px; font-weight:600; }
+
+  .record{
+    background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+    padding:12px 14px; margin-bottom:10px;
+  }
+  .record .rec-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .record .rec-date{ font-weight:600; font-size:13px; }
+  .record .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; font-size:12px; }
+  .record .grid div span.k{ color:var(--muted); display:block; font-size:10px; text-transform:uppercase; }
+  .record .grid div span.v{ font-family:var(--mono); }
+  .neg{ color:var(--danger); }
+  .pos{ color:var(--accent); }
+  .del-btn{ font-size:11px; padding:4px 8px; }
+
+  #patients{ display:flex; flex-direction:column; gap:16px; }
+  footer{ color:var(--muted); font-size:11px; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<h1>Controle Acumulado de Balanço — UTI</h1>
+<div class="sub">Envie o PDF do balanço a cada plantão. Os dados são extraídos automaticamente e somados ao histórico do paciente (por leito/atendimento).</div>
+
+<div class="card">
+  <h2>Enviar PDF</h2>
+  <div class="dropzone" id="dropzone">
+    <div>Arraste o PDF aqui ou clique para selecionar</div>
+    <input type="file" id="fileInput" accept="application/pdf">
+  </div>
+  <div id="status"></div>
+</div>
+
+<div class="card" id="reviewCard" style="display:none;">
+  <h2>Conferir antes de salvar</h2>
+  <div class="review-grid">
+    <div class="field"><label>Paciente</label><input id="rNome"></div>
+    <div class="field"><label>Leito</label><input id="rLeito"></div>
+    <div class="field"><label>Atendimento</label><input id="rAtend"></div>
+    <div class="field"><label>Data do balanço</label><input id="rData"></div>
+  </div>
+  <div class="review-grid">
+    <div class="field"><label>Diurese total (mL)</label><input id="rDiurese" type="number"></div>
+    <div class="field"><label>Ganhos total (mL)</label><input id="rGanhos" type="number"></div>
+    <div class="field"><label>Perdas total (mL)</label><input id="rPerdas" type="number"></div>
+    <div class="field"><label>Balanço hídrico (mL)</label><input id="rBalanco" type="number"></div>
+  </div>
+  <div class="review-grid">
+    <div class="field"><label>FC min–max</label><div class="minmax"><input id="rFcMin" type="number"><input id="rFcMax" type="number"></div></div>
+    <div class="field"><label>FR min–max</label><div class="minmax"><input id="rFrMin" type="number"><input id="rFrMax" type="number"></div></div>
+    <div class="field"><label>PAM min–max</label><div class="minmax"><input id="rPamMin" type="number"><input id="rPamMax" type="number"></div></div>
+    <div class="field"><label>SatO2 min–max</label><div class="minmax"><input id="rSatMin" type="number"><input id="rSatMax" type="number"></div></div>
+    <div class="field"><label>Temp min–max</label><div class="minmax"><input id="rTempMin" type="number" step="0.1"><input id="rTempMax" type="number" step="0.1"></div></div>
+  </div>
+  <div class="review-grid">
+    <div class="field"><label>Glicemias (separadas por vírgula)</label><input id="rGlic"></div>
+    <div class="field"><label>Dor (separadas por vírgula)</label><input id="rDor"></div>
+    <div class="field"><label>Evacuação</label><input id="rEvac"></div>
+  </div>
+  <div style="display:flex; gap:10px; margin-top:6px;">
+    <button class="primary" id="saveBtn">Salvar no histórico</button>
+    <button id="copyReviewBtn">Copiar p/ prontuário</button>
+    <button id="cancelBtn">Cancelar</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pacientes</h2>
+  <div id="patients"></div>
+  <div id="emptyMsg" style="color:var(--muted); font-size:13px;">Nenhum registro salvo ainda.</div>
+</div>
+
+<footer id="persistNote"></footer>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+// ---------- storage layer (browser localStorage — persists per device/browser) ----------
+const STORAGE_PREFIX = "uti_balanco_";
+let storageAvailable = true;
+async function storeGet(key){
+  try{
+    const v = localStorage.getItem(STORAGE_PREFIX + key);
+    return v;
+  }catch(e){
+    storageAvailable = false;
+    return null;
+  }
+}
+async function storeSet(key, value){
+  try{
+    localStorage.setItem(STORAGE_PREFIX + key, value);
+  }catch(e){
+    storageAvailable = false;
+  }
+}
+
+// ---------- PDF text extraction preserving row order ----------
+async function pdfToLines(arrayBuffer){
+  const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  let allLines = [];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const items = content.items.map(it=>({str:it.str, x:it.transform[4], y:it.transform[5]}));
+    items.sort((a,b)=> b.y - a.y || a.x - b.x);
+    let lines = [];
+    let current = null;
+    const TOL = 3;
+    items.forEach(it=>{
+      if(!current || Math.abs(it.y - current.y) > TOL){
+        current = {y: it.y, items:[it]};
+        lines.push(current);
+      } else {
+        current.items.push(it);
+      }
+    });
+    lines.forEach(l=>{
+      l.items.sort((a,b)=>a.x-b.x);
+      allLines.push(l.items.map(i=>i.str).join(' ').replace(/\s+/g,' ').trim());
+    });
+  }
+  return allLines.filter(l=>l.length>0);
+}
+
+function extractDecimals(line){
+  const dec = line.match(/-?\d+\.\d+/g);
+  return dec ? dec.map(Number) : [];
+}
+
+function getRowNumbers(lines, keywords, lookahead=2){
+  const idx = lines.findIndex(l => keywords.some(k => l.toUpperCase().includes(k.toUpperCase())));
+  if(idx === -1) return [];
+  let nums = extractDecimals(lines[idx]);
+  let i=1;
+  while(nums.length===0 && i<=lookahead && idx+i<lines.length){
+    nums = extractDecimals(lines[idx+i]);
+    i++;
+  }
+  return nums;
+}
+
+function findField(lines, label, stopPattern){
+  const idx = lines.findIndex(l => l.includes(label));
+  if(idx === -1) return "";
+  let rest = lines[idx].split(label)[1] || "";
+  if(stopPattern){
+    const m = rest.match(stopPattern);
+    if(m) rest = rest.slice(0, m.index);
+  }
+  return rest.trim();
+}
+
+function minMax(arr){
+  if(!arr.length) return {min:"", max:""};
+  return {min: Math.min(...arr), max: Math.max(...arr)};
+}
+
+function parseBalanco(lines){
+  const nome = findField(lines, "Paciente:", /Dt\.|$/);
+  const leito = findField(lines, "Leito:", /\n|$/);
+  const atendMatch = lines.find(l=>l.includes("Atendimento:"));
+  const atend = atendMatch ? (atendMatch.split("Atendimento:")[1].trim().match(/\d+/) || [""])[0] : "";
+  const dataMatch = lines.find(l=>l.includes("Data de Realiza"));
+  const dataBal = dataMatch ? (dataMatch.match(/\d{2}\/\d{2}\/\d{4}/) || [""])[0] : "";
+
+  const ganhosArr = getRowNumbers(lines, ["Total de Ganhos"]);
+  const perdasArr = getRowNumbers(lines, ["Total de Perdas"]);
+  const diureseArr = getRowNumbers(lines, ["DIURESE"]);
+  const evolArr = getRowNumbers(lines, ["EVOLU"]);
+
+  const ganhos = ganhosArr.length ? ganhosArr[ganhosArr.length-1] : 0;
+  const perdas = perdasArr.length ? perdasArr[perdasArr.length-1] : 0;
+  const diurese = diureseArr.length ? diureseArr[diureseArr.length-1] : 0;
+  const balanco = evolArr.length ? evolArr[evolArr.length-1] : (ganhos + perdas);
+
+  const fc = minMax(getRowNumbers(lines, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]));
+  const fr = minMax(getRowNumbers(lines, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]));
+  const pam = minMax(getRowNumbers(lines, ["P.A.M","PAM"]));
+  const sat = minMax(getRowNumbers(lines, ["SPO2","SATO2"]));
+  const temp = minMax(getRowNumbers(lines, ["TEMPERATURA"]));
+  const glic = getRowNumbers(lines, ["GLICEMIA"]);
+  const dor = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
+  const evacLine = lines.find(l=>l.toUpperCase().includes("EVACUA"));
+  const evac = evacLine ? evacLine.replace(/.*EVACUA[ÇC][ÃA]O[^:]*:?/i,"").trim() : "";
+
+  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dor, evac};
+}
+
+// ---------- UI wiring ----------
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const statusEl = document.getElementById("status");
+const reviewCard = document.getElementById("reviewCard");
+
+dropzone.addEventListener("click", ()=> fileInput.click());
+dropzone.addEventListener("dragover", e=>{ e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", ()=> dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", e=>{
+  e.preventDefault(); dropzone.classList.remove("drag");
+  if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", e=>{
+  if(e.target.files.length) handleFile(e.target.files[0]);
+});
+
+async function handleFile(file){
+  statusEl.textContent = "Lendo PDF...";
+  statusEl.className = "";
+  try{
+    const buf = await file.arrayBuffer();
+    const lines = await pdfToLines(buf);
+    const data = parseBalanco(lines);
+    fillReview(data);
+    statusEl.textContent = "PDF lido. Confira os campos abaixo antes de salvar.";
+    statusEl.className = "ok";
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = "Não consegui ler este PDF automaticamente. Você pode preencher os campos manualmente abaixo.";
+    statusEl.className = "err";
+    fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
+      fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
+      glic:[],dor:[],evac:""});
+  }
+}
+
+function fillReview(d){
+  reviewCard.style.display = "block";
+  document.getElementById("rNome").value = d.nome || "";
+  document.getElementById("rLeito").value = d.leito || "";
+  document.getElementById("rAtend").value = d.atend || "";
+  document.getElementById("rData").value = d.dataBal || "";
+  document.getElementById("rDiurese").value = d.diurese ?? "";
+  document.getElementById("rGanhos").value = d.ganhos ?? "";
+  document.getElementById("rPerdas").value = d.perdas ?? "";
+  document.getElementById("rBalanco").value = d.balanco ?? "";
+  document.getElementById("rFcMin").value = d.fc.min; document.getElementById("rFcMax").value = d.fc.max;
+  document.getElementById("rFrMin").value = d.fr.min; document.getElementById("rFrMax").value = d.fr.max;
+  document.getElementById("rPamMin").value = d.pam.min; document.getElementById("rPamMax").value = d.pam.max;
+  document.getElementById("rSatMin").value = d.sat.min; document.getElementById("rSatMax").value = d.sat.max;
+  document.getElementById("rTempMin").value = d.temp.min; document.getElementById("rTempMax").value = d.temp.max;
+  document.getElementById("rGlic").value = (d.glic||[]).join(", ");
+  document.getElementById("rDor").value = (d.dor||[]).join(", ");
+  document.getElementById("rEvac").value = d.evac || "";
+}
+
+document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
+  const r = {
+    diurese: parseFloat(document.getElementById("rDiurese").value) || "",
+    balanco: parseFloat(document.getElementById("rBalanco").value) || "",
+    fc: {min:document.getElementById("rFcMin").value, max:document.getElementById("rFcMax").value},
+    fr: {min:document.getElementById("rFrMin").value, max:document.getElementById("rFrMax").value},
+    pam: {min:document.getElementById("rPamMin").value, max:document.getElementById("rPamMax").value},
+    sat: {min:document.getElementById("rSatMin").value, max:document.getElementById("rSatMax").value},
+    temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
+    glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
+    dor: document.getElementById("rDor").value.split(",").map(s=>s.trim()).filter(Boolean),
+    evac: document.getElementById("rEvac").value.trim()
+  };
+  copyToClipboard(buildProntuarioText(r), e.target);
+});
+
+document.getElementById("cancelBtn").addEventListener("click", ()=>{
+  reviewCard.style.display = "none";
+  fileInput.value = "";
+  statusEl.textContent = "";
+});
+
+function buildProntuarioText(r){
+  const fmt = o => (o.min==="" || o.max==="" || o.min==null || o.max==null) ? "" : `${o.min} - ${o.max}`;
+  const lines = [
+    `Diurese: ${r.diurese !== "" && r.diurese != null ? r.diurese + " mL" : ""}`,
+    `Balan\u00e7o h\u00eddrico: ${r.balanco !== "" && r.balanco != null ? (r.balanco>=0?"+":"") + r.balanco + " mL" : ""}`,
+    `Fc: ${fmt(r.fc)}`,
+    `Fr: ${fmt(r.fr)}`,
+    `Pam: ${fmt(r.pam)}`,
+    `Sat o2: ${fmt(r.sat)}`,
+    `Temp: ${fmt(r.temp)}`,
+    `Glic capilar: ${(r.glic||[]).join(", ")}`,
+    `Dor: ${(r.dor||[]).join(", ")}`,
+    `Evacua\u00e7\u00e3o: ${r.evac || ""}`
+  ];
+  return lines.join("\n");
+}
+
+async function copyToClipboard(text, btn){
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+  if(btn){
+    const original = btn.textContent;
+    btn.textContent = "Copiado!";
+    setTimeout(()=>{ btn.textContent = original; }, 1500);
+  }
+}
+
+document.getElementById("saveBtn").addEventListener("click", async ()=>{
+  const record = {
+    dataBal: document.getElementById("rData").value.trim() || "(sem data)",
+    diurese: parseFloat(document.getElementById("rDiurese").value) || 0,
+    ganhos: parseFloat(document.getElementById("rGanhos").value) || 0,
+    perdas: parseFloat(document.getElementById("rPerdas").value) || 0,
+    balanco: parseFloat(document.getElementById("rBalanco").value) || 0,
+    fc: {min:document.getElementById("rFcMin").value, max:document.getElementById("rFcMax").value},
+    fr: {min:document.getElementById("rFrMin").value, max:document.getElementById("rFrMax").value},
+    pam: {min:document.getElementById("rPamMin").value, max:document.getElementById("rPamMax").value},
+    sat: {min:document.getElementById("rSatMin").value, max:document.getElementById("rSatMax").value},
+    temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
+    glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
+    dor: document.getElementById("rDor").value.split(",").map(s=>s.trim()).filter(Boolean),
+    evac: document.getElementById("rEvac").value.trim(),
+    savedAt: new Date().toISOString()
+  };
+  const nome = document.getElementById("rNome").value.trim() || "Paciente sem nome";
+  const leito = document.getElementById("rLeito").value.trim() || "—";
+  const atend = document.getElementById("rAtend").value.trim();
+  const patientId = atend ? ("atd_" + atend) : ("nm_" + nome.replace(/\s+/g,"_"));
+
+  let history = await storeGet("hist_" + patientId);
+  history = history ? JSON.parse(history) : [];
+  history.push(record);
+  await storeSet("hist_" + patientId, JSON.stringify(history));
+
+  let index = await storeGet("index_pacientes");
+  index = index ? JSON.parse(index) : [];
+  if(!index.find(p=>p.id===patientId)){
+    index.push({id:patientId, nome, leito, atend});
+    await storeSet("index_pacientes", JSON.stringify(index));
+  } else {
+    index = index.map(p=> p.id===patientId ? {...p, nome, leito, atend} : p);
+    await storeSet("index_pacientes", JSON.stringify(index));
+  }
+
+  reviewCard.style.display = "none";
+  fileInput.value = "";
+  statusEl.textContent = "Registro salvo no histórico de " + nome + ".";
+  statusEl.className = "ok";
+  renderPatients();
+});
+
+function fmtRange(o){
+  if(o.min==="" || o.max==="" || o.min==null || o.max==null) return "—";
+  return o.min + " – " + o.max;
+}
+
+async function renderPatients(){
+  const container = document.getElementById("patients");
+  const emptyMsg = document.getElementById("emptyMsg");
+  container.innerHTML = "";
+  let index = await storeGet("index_pacientes");
+  index = index ? JSON.parse(index) : [];
+  if(!index.length){ emptyMsg.style.display="block"; return; }
+  emptyMsg.style.display="none";
+
+  for(const p of index){
+    let history = await storeGet("hist_" + p.id);
+    history = history ? JSON.parse(history) : [];
+    const totalDiurese = history.reduce((a,r)=>a+(r.diurese||0),0);
+    const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
+
+    const block = document.createElement("div");
+    block.className = "card patient-block";
+    block.innerHTML = `
+      <div class="patient-head">
+        <div>
+          <div class="name">${p.nome}</div>
+          <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""}</div>
+        </div>
+        <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
+      </div>
+      <div class="cumulative">
+        <div class="stat"><div class="label">Diurese acumulada</div><div class="value">${totalDiurese.toFixed(0)} mL</div></div>
+        <div class="stat"><div class="label">Balanço hídrico acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
+        <div class="stat"><div class="label">Registros</div><div class="value">${history.length}</div></div>
+      </div>
+      <div class="records"></div>
+    `;
+    const recDiv = block.querySelector(".records");
+    history.slice().reverse().forEach((r, revIdx)=>{
+      const realIdx = history.length - 1 - revIdx;
+      const rec = document.createElement("div");
+      rec.className = "record";
+      rec.innerHTML = `
+        <div class="rec-head">
+          <div class="rec-date">${r.dataBal}</div>
+          <div style="display:flex; gap:6px;">
+            <button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar p/ prontuário</button>
+            <button class="danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button>
+          </div>
+        </div>
+        <div class="grid">
+          <div><span class="k">Diurese</span><span class="v">${r.diurese} mL</span></div>
+          <div><span class="k">Balanço hídrico</span><span class="v ${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco} mL</span></div>
+          <div><span class="k">FC</span><span class="v">${fmtRange(r.fc)} bpm</span></div>
+          <div><span class="k">FR</span><span class="v">${fmtRange(r.fr)} rpm</span></div>
+          <div><span class="k">PAM</span><span class="v">${fmtRange(r.pam)} mmHg</span></div>
+          <div><span class="k">SatO2</span><span class="v">${fmtRange(r.sat)} %</span></div>
+          <div><span class="k">Temp</span><span class="v">${fmtRange(r.temp)} °C</span></div>
+          <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(" · "):"—"}</span></div>
+          <div><span class="k">Dor</span><span class="v">${r.dor.length?r.dor.join(" · "):"—"}</span></div>
+          <div><span class="k">Evacuação</span><span class="v">${r.evac || "sem registro"}</span></div>
+        </div>
+      `;
+      recDiv.appendChild(rec);
+    });
+    container.appendChild(block);
+  }
+
+  container.querySelectorAll(".del-patient").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const id = btn.dataset.id;
+      let index = JSON.parse(await storeGet("index_pacientes") || "[]");
+      index = index.filter(p=>p.id!==id);
+      await storeSet("index_pacientes", JSON.stringify(index));
+      renderPatients();
+    });
+  });
+  container.querySelectorAll(".del-record").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const id = btn.dataset.id, idx = parseInt(btn.dataset.idx);
+      let history = JSON.parse(await storeGet("hist_" + id) || "[]");
+      history.splice(idx,1);
+      await storeSet("hist_" + id, JSON.stringify(history));
+      renderPatients();
+    });
+  });
+  container.querySelectorAll(".copy-record").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const id = btn.dataset.id, idx = parseInt(btn.dataset.idx);
+      let history = JSON.parse(await storeGet("hist_" + id) || "[]");
+      const r = history[idx];
+      if(r) copyToClipboard(buildProntuarioText(r), btn);
+    });
+  });
+}
+
+renderPatients().then(()=>{
+  const note = document.getElementById("persistNote");
+  note.textContent = storageAvailable
+    ? "Os registros ficam salvos neste navegador/dispositivo entre sessões (localStorage)."
+    : "Este navegador bloqueou o armazenamento local — os registros não serão salvos entre sessões.";
+});
+</script>
+
+</body>
+</html>
