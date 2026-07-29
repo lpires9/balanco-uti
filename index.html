@@ -125,8 +125,14 @@
   </div>
   <div class="review-grid">
     <div class="field"><label>Glicemias (separadas por vírgula)</label><input id="rGlic"></div>
-    <div class="field"><label>Dor (separadas por vírgula)</label><input id="rDor"></div>
-    <div class="field"><label>Evacuação</label><input id="rEvac"></div>
+    <div class="field"><label>Dor</label>
+      <select id="rDorSim" style="width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:7px 8px; color:var(--text); font-size:13px;">
+        <option value="">—</option>
+        <option value="Sim">Sim</option>
+        <option value="Não">Não</option>
+      </select>
+    </div>
+    <div class="field"><label>Evacuação (nº de vezes)</label><input id="rEvacCount" type="number" min="0" step="1"></div>
   </div>
   <div style="display:flex; gap:10px; margin-top:6px;">
     <button class="primary" id="saveBtn">Salvar no histórico</button>
@@ -211,6 +217,25 @@ function getRowNumbers(lines, keywords, lookahead=2){
   return nums;
 }
 
+// Counts occurrences in a row (e.g. how many times evacuação was marked).
+// Returns null if the row/keyword wasn't found at all (unknown), or a number >= 0 if found.
+function getRowCount(lines, keywords, lookahead=3){
+  const idx = lines.findIndex(l => keywords.some(k => l.toUpperCase().includes(k.toUpperCase())));
+  if(idx === -1) return null;
+  const searchLines = [lines[idx]];
+  for(let i=1; i<=lookahead && idx+i<lines.length; i++) searchLines.push(lines[idx+i]);
+  let count = 0;
+  searchLines.forEach(l=>{
+    count += extractDecimals(l).length;
+  });
+  if(count === 0){
+    const joined = searchLines.join(" ");
+    const marks = joined.match(/\bSIM\b|\bPRESENTE\b|\bX\b/gi);
+    if(marks) count = marks.length;
+  }
+  return count;
+}
+
 function findField(lines, label, stopPattern){
   const idx = lines.findIndex(l => l.includes(label));
   if(idx === -1) return "";
@@ -251,11 +276,11 @@ function parseBalanco(lines){
   const sat = minMax(getRowNumbers(lines, ["SPO2","SATO2"]));
   const temp = minMax(getRowNumbers(lines, ["TEMPERATURA"]));
   const glic = getRowNumbers(lines, ["GLICEMIA"]);
-  const dor = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
-  const evacLine = lines.find(l=>l.toUpperCase().includes("EVACUA"));
-  const evac = evacLine ? evacLine.replace(/.*EVACUA[ÇC][ÃA]O[^:]*:?/i,"").trim() : "";
+  const dorArr = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
+  const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
+  const evacCount = getRowCount(lines, ["EVACUA","DEJE"]);
 
-  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dor, evac};
+  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount};
 }
 
 // ---------- UI wiring ----------
@@ -291,7 +316,7 @@ async function handleFile(file){
     statusEl.className = "err";
     fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
       fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
-      glic:[],dor:[],evac:""});
+      glic:[],dorSim:"",evacCount:""});
   }
 }
 
@@ -311,8 +336,8 @@ function fillReview(d){
   document.getElementById("rSatMin").value = d.sat.min; document.getElementById("rSatMax").value = d.sat.max;
   document.getElementById("rTempMin").value = d.temp.min; document.getElementById("rTempMax").value = d.temp.max;
   document.getElementById("rGlic").value = (d.glic||[]).join(", ");
-  document.getElementById("rDor").value = (d.dor||[]).join(", ");
-  document.getElementById("rEvac").value = d.evac || "";
+  document.getElementById("rDorSim").value = d.dorSim || "";
+  document.getElementById("rEvacCount").value = (d.evacCount === null || d.evacCount === undefined) ? "" : d.evacCount;
 }
 
 document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
@@ -325,8 +350,8 @@ document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
     sat: {min:document.getElementById("rSatMin").value, max:document.getElementById("rSatMax").value},
     temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
     glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
-    dor: document.getElementById("rDor").value.split(",").map(s=>s.trim()).filter(Boolean),
-    evac: document.getElementById("rEvac").value.trim()
+    dorSim: document.getElementById("rDorSim").value,
+    evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value)
   };
   copyToClipboard(buildProntuarioText(r), e.target);
 });
@@ -348,8 +373,8 @@ function buildProntuarioText(r){
     `Sat o2: ${fmt(r.sat)}`,
     `Temp: ${fmt(r.temp)}`,
     `Glic capilar: ${(r.glic||[]).join(", ")}`,
-    `Dor: ${(r.dor||[]).join(", ")}`,
-    `Evacua\u00e7\u00e3o: ${r.evac || ""}`
+    `Dor: ${r.dorSim || ""}`,
+    `Evacua\u00e7\u00e3o: ${(r.evacCount === "" || r.evacCount === null || r.evacCount === undefined) ? "" : (r.evacCount>0 ? "Presente " + r.evacCount + "x" : "Ausente")}`
   ];
   return lines.join("\n");
 }
@@ -385,8 +410,8 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     sat: {min:document.getElementById("rSatMin").value, max:document.getElementById("rSatMax").value},
     temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
     glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
-    dor: document.getElementById("rDor").value.split(",").map(s=>s.trim()).filter(Boolean),
-    evac: document.getElementById("rEvac").value.trim(),
+    dorSim: document.getElementById("rDorSim").value,
+    evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
     savedAt: new Date().toISOString()
   };
   const nome = document.getElementById("rNome").value.trim() || "Paciente sem nome";
@@ -475,8 +500,8 @@ async function renderPatients(){
           <div><span class="k">SatO2</span><span class="v">${fmtRange(r.sat)} %</span></div>
           <div><span class="k">Temp</span><span class="v">${fmtRange(r.temp)} °C</span></div>
           <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(" · "):"—"}</span></div>
-          <div><span class="k">Dor</span><span class="v">${r.dor.length?r.dor.join(" · "):"—"}</span></div>
-          <div><span class="k">Evacuação</span><span class="v">${r.evac || "sem registro"}</span></div>
+          <div><span class="k">Dor</span><span class="v">${r.dorSim || "—"}</span></div>
+          <div><span class="k">Evacuação</span><span class="v">${(r.evacCount==="" || r.evacCount===null || r.evacCount===undefined) ? "sem registro" : (r.evacCount>0 ? "Presente " + r.evacCount + "x" : "Ausente")}</span></div>
         </div>
       `;
       recDiv.appendChild(rec);
