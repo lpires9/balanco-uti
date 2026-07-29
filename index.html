@@ -217,24 +217,6 @@ function getRowNumbers(lines, keywords, lookahead=2){
   return nums;
 }
 
-// Counts occurrences in a row (e.g. how many times evacuação was marked).
-// Returns null if the row/keyword wasn't found at all (unknown), or a number >= 0 if found.
-function getRowCount(lines, keywords, lookahead=3){
-  const idx = lines.findIndex(l => keywords.some(k => l.toUpperCase().includes(k.toUpperCase())));
-  if(idx === -1) return null;
-  const searchLines = [lines[idx]];
-  for(let i=1; i<=lookahead && idx+i<lines.length; i++) searchLines.push(lines[idx+i]);
-  let count = 0;
-  searchLines.forEach(l=>{
-    count += extractDecimals(l).length;
-  });
-  if(count === 0){
-    const joined = searchLines.join(" ");
-    const marks = joined.match(/\bSIM\b|\bPRESENTE\b|\bX\b/gi);
-    if(marks) count = marks.length;
-  }
-  return count;
-}
 
 function findField(lines, label, stopPattern){
   const idx = lines.findIndex(l => l.includes(label));
@@ -278,7 +260,8 @@ function parseBalanco(lines){
   const glic = getRowNumbers(lines, ["GLICEMIA"]);
   const dorArr = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
-  const evacCount = getRowCount(lines, ["EVACUA","DEJE"]);
+  const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
+  const evacCount = evacArr.length ? evacArr[evacArr.length-1] : null;
 
   return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount};
 }
