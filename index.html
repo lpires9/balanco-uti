@@ -86,6 +86,18 @@
 
   #patients{ display:flex; flex-direction:column; gap:16px; }
   footer{ color:var(--muted); font-size:11px; margin-top:10px; }
+
+  .alert-chip{
+    font-size:11px; padding:3px 9px; border-radius:12px; margin:0 6px 6px 0;
+    display:inline-block; border:1px solid; font-weight:500;
+  }
+  .alert-warn{ background:rgba(217,105,79,0.12); color:var(--danger); border-color:var(--danger); }
+  .alert-info{ background:rgba(224,164,88,0.12); color:var(--accent2); border-color:var(--accent2); }
+
+  .trend-section{ margin-top:8px; margin-bottom:14px; padding-top:10px; border-top:1px solid var(--line); }
+  .trend-title{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
+  .trend-grid{ display:flex; gap:20px; flex-wrap:wrap; }
+  .mini-chart .mini-label{ font-size:10px; color:var(--muted); margin-bottom:3px; }
 </style>
 </head>
 <body>
@@ -152,6 +164,9 @@
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
+const HOURS_ORDER = ["07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00",
+  "17:00","18:00","19:00","20:00","21:00","22:00","23:00","00:00","01:00","02:00","03:00","04:00","05:00","06:00"];
+
 // ---------- storage layer (browser localStorage — persists per device/browser) ----------
 const STORAGE_PREFIX = "uti_balanco_";
 let storageAvailable = true;
@@ -172,32 +187,84 @@ async function storeSet(key, value){
   }
 }
 
-// ---------- PDF text extraction preserving row order ----------
-async function pdfToLines(arrayBuffer){
+// ---------- PDF text extraction preserving row order AND per-item x/y position ----------
+// Returns an array of line objects: {y, items:[{str,x,y}], text}
+// Keeping item-level x lets us later match each numeric reading to its real
+// hour column (the MV/SoulMV report always renders the same 24-column grid,
+// so a value's x position reliably tells us which hour it belongs to).
+async function pdfToLineObjects(arrayBuffer){
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-  let allLines = [];
+  let lineObjects = [];
   for(let p=1;p<=pdf.numPages;p++){
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
     const items = content.items.map(it=>({str:it.str, x:it.transform[4], y:it.transform[5]}));
     items.sort((a,b)=> b.y - a.y || a.x - b.x);
-    let lines = [];
+    let grouped = [];
     let current = null;
     const TOL = 3;
     items.forEach(it=>{
       if(!current || Math.abs(it.y - current.y) > TOL){
         current = {y: it.y, items:[it]};
-        lines.push(current);
+        grouped.push(current);
       } else {
         current.items.push(it);
       }
     });
-    lines.forEach(l=>{
+    grouped.forEach(l=>{
       l.items.sort((a,b)=>a.x-b.x);
-      allLines.push(l.items.map(i=>i.str).join(' ').replace(/\s+/g,' ').trim());
+      const text = l.items.map(i=>i.str).join(' ').replace(/\s+/g,' ').trim();
+      if(text.length>0) lineObjects.push({y:l.y, items:l.items, text});
     });
   }
-  return allLines.filter(l=>l.length>0);
+  return lineObjects;
+}
+
+// Finds the hour-column header (the "07:00 08:00 ... 06:00" row that has NO
+// trailing "Total" column — that's the Sinais Vitais table's header) and
+// returns each hour label's x position.
+function buildHourColumns(lineObjects){
+  for(const lo of lineObjects){
+    const hourItems = lo.items.filter(it => /^\d{2}:\d{2}$/.test(it.str.trim()));
+    if(hourItems.length >= 20 && !/total/i.test(lo.text)){
+      return hourItems.map(it=>({hour: it.str.trim(), x: it.x})).sort((a,b)=>a.x-b.x);
+    }
+  }
+  return null;
+}
+
+function nearestHour(x, hourColumns){
+  let best = null, bestDist = Infinity;
+  hourColumns.forEach(hc=>{
+    const d = Math.abs(hc.x - x);
+    if(d < bestDist){ bestDist = d; best = hc.hour; }
+  });
+  return best;
+}
+
+// Finds a labeled row (by keyword) and returns its readings as {hour, value}
+// pairs, using x-position to determine the real hour column. Falls back to
+// checking the next couple of lines for rows whose label wraps (e.g.
+// "FREQUENCIA RESPIRATORIA -" / values / "RPM" across 3 lines).
+function extractSeries(lineObjects, keywords, hourColumns, lookahead=3){
+  if(!hourColumns) return [];
+  const idx = lineObjects.findIndex(lo => keywords.some(k => lo.text.toUpperCase().includes(k.toUpperCase())));
+  if(idx === -1) return [];
+  for(let offset=0; offset<=lookahead && idx+offset<lineObjects.length; offset++){
+    const items = lineObjects[idx+offset].items.filter(it => /^-?\d+\.\d+$/.test(it.str.trim()));
+    if(items.length){
+      const points = items.map(it => ({hour: nearestHour(it.x, hourColumns), value: parseFloat(it.str)}));
+      points.sort((a,b)=> HOURS_ORDER.indexOf(a.hour) - HOURS_ORDER.indexOf(b.hour));
+      return points;
+    }
+  }
+  return [];
+}
+
+function minMaxFromSeries(series){
+  const vals = series.map(p=>p.value).filter(v=>!isNaN(v));
+  if(!vals.length) return {min:"", max:""};
+  return {min: Math.min(...vals), max: Math.max(...vals)};
 }
 
 function extractDecimals(line){
@@ -234,7 +301,9 @@ function minMax(arr){
   return {min: Math.min(...arr), max: Math.max(...arr)};
 }
 
-function parseBalanco(lines){
+function parseBalanco(lineObjects){
+  const lines = lineObjects.map(l=>l.text);
+
   const nome = findField(lines, "Paciente:", /Dt\.|$/);
   const leito = findField(lines, "Leito:", /\n|$/);
   const atendMatch = lines.find(l=>l.includes("Atendimento:"));
@@ -252,18 +321,33 @@ function parseBalanco(lines){
   const diurese = diureseArr.length ? diureseArr[diureseArr.length-1] : 0;
   const balanco = evolArr.length ? evolArr[evolArr.length-1] : (ganhos + perdas);
 
-  const fc = minMax(getRowNumbers(lines, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]));
-  const fr = minMax(getRowNumbers(lines, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]));
-  const pam = minMax(getRowNumbers(lines, ["P.A.M","PAM"]));
-  const sat = minMax(getRowNumbers(lines, ["SPO2","SATO2"]));
-  const temp = minMax(getRowNumbers(lines, ["TEMPERATURA"]));
-  const glic = getRowNumbers(lines, ["GLICEMIA"]);
+  // Position-based hour-column matching (preferred): each reading is matched
+  // to the hour column it's printed under, so trends reflect real time-of-day.
+  const hourColumns = buildHourColumns(lineObjects);
+  const fcSeries = extractSeries(lineObjects, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"], hourColumns);
+  const frSeries = extractSeries(lineObjects, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"], hourColumns);
+  const pamSeries = extractSeries(lineObjects, ["P.A.M","PAM"], hourColumns);
+  const satSeries = extractSeries(lineObjects, ["SPO2","SATO2"], hourColumns);
+  const tempSeries = extractSeries(lineObjects, ["TEMPERATURA"], hourColumns);
+  const glicSeries = extractSeries(lineObjects, ["GLICEMIA"], hourColumns);
+
+  // Text-only fallback (used only if the hour header wasn't found, e.g. a
+  // differently-formatted report) — keeps min/max working even without position data.
+  const fc = fcSeries.length ? minMaxFromSeries(fcSeries) : minMax(getRowNumbers(lines, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]));
+  const fr = frSeries.length ? minMaxFromSeries(frSeries) : minMax(getRowNumbers(lines, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]));
+  const pam = pamSeries.length ? minMaxFromSeries(pamSeries) : minMax(getRowNumbers(lines, ["P.A.M","PAM"]));
+  const sat = satSeries.length ? minMaxFromSeries(satSeries) : minMax(getRowNumbers(lines, ["SPO2","SATO2"]));
+  const temp = tempSeries.length ? minMaxFromSeries(tempSeries) : minMax(getRowNumbers(lines, ["TEMPERATURA"]));
+  const glic = glicSeries.length ? glicSeries.map(p=>p.value) : getRowNumbers(lines, ["GLICEMIA"]);
+
   const dorArr = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
   const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
   const evacCount = evacArr.length ? evacArr[evacArr.length-1] : null;
 
-  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount};
+  const series = { fc: fcSeries, fr: frSeries, pam: pamSeries, sat: satSeries, temp: tempSeries, glic: glicSeries };
+
+  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount, series};
 }
 
 // ---------- UI wiring ----------
@@ -283,18 +367,25 @@ fileInput.addEventListener("change", e=>{
   if(e.target.files.length) handleFile(e.target.files[0]);
 });
 
+let lastParsedSeries = null;
+
 async function handleFile(file){
   statusEl.textContent = "Lendo PDF...";
   statusEl.className = "";
   try{
     const buf = await file.arrayBuffer();
-    const lines = await pdfToLines(buf);
-    const data = parseBalanco(lines);
+    const lineObjects = await pdfToLineObjects(buf);
+    const data = parseBalanco(lineObjects);
+    lastParsedSeries = data.series;
     fillReview(data);
-    statusEl.textContent = "PDF lido. Confira os campos abaixo antes de salvar.";
+    const hasPositional = Object.values(data.series).some(s=>s.length>0);
+    statusEl.textContent = hasPositional
+      ? "PDF lido, com gráfico de tendência no dia disponível. Confira os campos antes de salvar."
+      : "PDF lido. Confira os campos abaixo antes de salvar (gráfico de tendência no dia não disponível para este layout).";
     statusEl.className = "ok";
   }catch(err){
     console.error(err);
+    lastParsedSeries = null;
     statusEl.textContent = "Não consegui ler este PDF automaticamente. Você pode preencher os campos manualmente abaixo.";
     statusEl.className = "err";
     fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
@@ -395,6 +486,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
     dorSim: document.getElementById("rDorSim").value,
     evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
+    series: lastParsedSeries,
     savedAt: new Date().toISOString()
   };
   const nome = document.getElementById("rNome").value.trim() || "Paciente sem nome";
@@ -429,6 +521,140 @@ function fmtRange(o){
   return o.min + " – " + o.max;
 }
 
+function parseDatePtBr(str){
+  if(!str) return null;
+  const m = str.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if(!m) return null;
+  return new Date(parseInt(m[3]), parseInt(m[2])-1, parseInt(m[1]));
+}
+
+function getAlerts(r){
+  const alerts = [];
+  const fcMin = parseFloat(r.fc.min), fcMax = parseFloat(r.fc.max);
+  if(!isNaN(fcMin) && fcMin < 60) alerts.push({level:'warn', text:`Bradicardia (FC mín ${r.fc.min})`});
+  if(!isNaN(fcMax) && fcMax > 100) alerts.push({level:'warn', text:`Taquicardia (FC máx ${r.fc.max})`});
+
+  const frMin = parseFloat(r.fr.min), frMax = parseFloat(r.fr.max);
+  if(!isNaN(frMin) && frMin < 12) alerts.push({level:'warn', text:`Bradipneia (FR mín ${r.fr.min})`});
+  if(!isNaN(frMax) && frMax > 24) alerts.push({level:'warn', text:`Taquipneia (FR máx ${r.fr.max})`});
+
+  const pamMin = parseFloat(r.pam.min);
+  if(!isNaN(pamMin) && pamMin < 65) alerts.push({level:'warn', text:`Hipotensão (PAM mín ${r.pam.min})`});
+
+  const satMin = parseFloat(r.sat.min);
+  if(!isNaN(satMin) && satMin < 92) alerts.push({level:'warn', text:`Hipoxemia (SatO2 mín ${r.sat.min}%)`});
+
+  const tempMin = parseFloat(r.temp.min), tempMax = parseFloat(r.temp.max);
+  if(!isNaN(tempMin) && tempMin < 36) alerts.push({level:'warn', text:`Hipotermia (Temp mín ${r.temp.min}°C)`});
+  if(!isNaN(tempMax) && tempMax >= 38) alerts.push({level:'warn', text:`Febre (Temp máx ${r.temp.max}°C)`});
+
+  let hasHipoglic = false, hasHiperglic = false;
+  (r.glic||[]).forEach(g=>{
+    const v = parseFloat(g);
+    if(!isNaN(v)){
+      if(v < 70) hasHipoglic = true;
+      if(v > 180) hasHiperglic = true;
+    }
+  });
+  if(hasHipoglic) alerts.push({level:'warn', text:'Hipoglicemia registrada'});
+  if(hasHiperglic) alerts.push({level:'warn', text:'Hiperglicemia registrada'});
+
+  if(!isNaN(r.balanco)){
+    if(r.balanco > 2000) alerts.push({level:'info', text:`Balanço muito positivo (+${r.balanco} mL)`});
+    if(r.balanco < -2000) alerts.push({level:'info', text:`Balanço muito negativo (${r.balanco} mL)`});
+  }
+
+  return alerts;
+}
+
+// Minimal inline SVG sparkline. values: array of numbers or null (gaps allowed).
+function sparklineSVG(values, opts={}){
+  const w = opts.width || 170, h = opts.height || 54, pad = 6;
+  const color = opts.color || "#2fb4a3";
+  const pts = values.map((v,i)=>({v, i})).filter(o => o.v !== null && o.v !== undefined && !isNaN(o.v));
+  if(pts.length === 0){
+    return `<div style="font-size:11px; color:var(--muted); width:${w}px;">sem dados suficientes</div>`;
+  }
+  const vs = pts.map(o=>o.v);
+  let min = Math.min(...vs), max = Math.max(...vs);
+  if(min === max){ min -= 1; max += 1; }
+  const n = values.length;
+  const xStep = n > 1 ? (w - 2*pad) / (n-1) : 0;
+  const yOf = v => (h - pad) - ((v - min) / (max - min)) * (h - 2*pad);
+  let path = "";
+  let circles = "";
+  pts.forEach((o, idx)=>{
+    const x = pad + o.i * xStep;
+    const y = yOf(o.v);
+    path += (idx===0 ? "M" : " L") + x.toFixed(1) + "," + y.toFixed(1);
+    circles += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="${color}"></circle>`;
+  });
+  const lastVal = vs[vs.length-1];
+  return `<svg width="${w}" height="${h}" style="overflow:visible; display:block;">
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="2"></path>
+    ${circles}
+    <text x="${w-pad}" y="${h-2}" font-size="10" fill="${color}" text-anchor="end" font-family="monospace">${lastVal}</text>
+  </svg>`;
+}
+
+function buildTrendSection(history){
+  if(history.length < 2){
+    return `<div class="trend-section"><div class="trend-title">Evolução entre plantões</div><div style="font-size:12px; color:var(--muted);">Envie mais plantões deste paciente para ver a evolução.</div></div>`;
+  }
+  const sorted = history.slice().sort((a,b)=>{
+    const da = parseDatePtBr(a.dataBal), db = parseDatePtBr(b.dataBal);
+    if(!da || !db) return 0;
+    return da - db;
+  });
+  const labels = sorted.map(r=>r.dataBal);
+  const balancoVals = sorted.map(r=> isNaN(r.balanco) ? null : r.balanco);
+  const pamMinVals = sorted.map(r=> r.pam.min===""? null : parseFloat(r.pam.min));
+  const satMinVals = sorted.map(r=> r.sat.min===""? null : parseFloat(r.sat.min));
+  const fcMaxVals = sorted.map(r=> r.fc.max===""? null : parseFloat(r.fc.max));
+  const tempMaxVals = sorted.map(r=> r.temp.max===""? null : parseFloat(r.temp.max));
+
+  return `
+    <div class="trend-section">
+      <div class="trend-title">Evolução entre plantões (${labels[0]} → ${labels[labels.length-1]})</div>
+      <div class="trend-grid">
+        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#2fb4a3"})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#e0a458"})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#2fb4a3"})}</div>
+        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#d9694f"})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#e0a458"})}</div>
+      </div>
+    </div>
+  `;
+}
+
+function seriesToHourArray(series){
+  const arr = new Array(24).fill(null);
+  (series||[]).forEach(p=>{
+    const idx = HOURS_ORDER.indexOf(p.hour);
+    if(idx>=0) arr[idx] = p.value;
+  });
+  return arr;
+}
+
+function buildIntradaySection(record){
+  if(!record.series) return '';
+  const s = record.series;
+  const anyData = ['fc','fr','pam','sat','temp','glic'].some(k => (s[k]||[]).length>0);
+  if(!anyData) return '';
+  return `
+    <div class="trend-section">
+      <div class="trend-title">Tendência no dia (por horário registrado no PDF)</div>
+      <div class="trend-grid">
+        <div class="mini-chart"><div class="mini-label">FC (bpm)</div>${sparklineSVG(seriesToHourArray(s.fc),{color:"#d9694f",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM (mmHg)</div>${sparklineSVG(seriesToHourArray(s.pam),{color:"#e0a458",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 (%)</div>${sparklineSVG(seriesToHourArray(s.sat),{color:"#2fb4a3",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp (°C)</div>${sparklineSVG(seriesToHourArray(s.temp),{color:"#e0a458",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Glicemia (mg/dL)</div>${sparklineSVG(seriesToHourArray(s.glic),{color:"#2fb4a3",width:220})}</div>
+      </div>
+    </div>
+  `;
+}
+
 async function renderPatients(){
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
@@ -459,11 +685,13 @@ async function renderPatients(){
         <div class="stat"><div class="label">Balanço hídrico acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
         <div class="stat"><div class="label">Registros</div><div class="value">${history.length}</div></div>
       </div>
+      ${buildTrendSection(history)}
       <div class="records"></div>
     `;
     const recDiv = block.querySelector(".records");
     history.slice().reverse().forEach((r, revIdx)=>{
       const realIdx = history.length - 1 - revIdx;
+      const alerts = getAlerts(r);
       const rec = document.createElement("div");
       rec.className = "record";
       rec.innerHTML = `
@@ -474,6 +702,8 @@ async function renderPatients(){
             <button class="danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button>
           </div>
         </div>
+        ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">⚠ ${a.text}</span>`).join('')}</div>` : ''}
+        ${buildIntradaySection(r)}
         <div class="grid">
           <div><span class="k">Diurese</span><span class="v">${r.diurese} mL</span></div>
           <div><span class="k">Balanço hídrico</span><span class="v ${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco} mL</span></div>
