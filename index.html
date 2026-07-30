@@ -207,7 +207,7 @@ async function pdfToLineObjects(arrayBuffer){
     items.sort((a,b)=> b.y - a.y || a.x - b.x);
     let grouped = [];
     let current = null;
-    const TOL = 3;
+    const TOL = 1.5;
     items.forEach(it=>{
       if(!current || Math.abs(it.y - current.y) > TOL){
         current = {y: it.y, items:[it]};
@@ -218,8 +218,18 @@ async function pdfToLineObjects(arrayBuffer){
     });
     grouped.forEach(l=>{
       l.items.sort((a,b)=>a.x-b.x);
-      const text = l.items.map(i=>i.str).join(' ').replace(/\s+/g,' ').trim();
-      if(text.length>0) lineObjects.push({y:l.y, items:l.items, text});
+      // Some exports from this system double-paint the identification header
+      // (Paciente/Leito/Atendimento/Data) to fake bold text — same string at
+      // the same x,y drawn twice. That breaks phrase matching ("Data de
+      // Realização..."), so collapse exact consecutive duplicates here.
+      const deduped = [];
+      l.items.forEach(it=>{
+        const prev = deduped[deduped.length-1];
+        const isDup = prev && prev.str === it.str && Math.abs(prev.x - it.x) < 0.5;
+        if(!isDup) deduped.push(it);
+      });
+      const text = deduped.map(i=>i.str).join(' ').replace(/\s+/g,' ').trim();
+      if(text.length>0) lineObjects.push({y:l.y, items:deduped, text});
     });
   }
   return lineObjects;
