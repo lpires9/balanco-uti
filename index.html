@@ -464,7 +464,7 @@ function parseBalanco(lineObjects){
   // Extra series needed for the vasopressor / volume-inertia analysis.
   // noraSeries is the Noradrenalina infusion RATE in mL/h (from the GANHOS
   // table) — still needs concentration + weight to become an actual dose.
-  const noraSeries = extractSeries(lineObjects, ["NORADRENALINA","NORADRENALIN","NORAD "]);
+  const noraSeries = extractSeries(lineObjects, ["NORADRENALINA","NORADRENALIN","NORAD ","NOREPINEFRINA","NOREPINEFRIN","LEVARTERENOL"]);
   const diureseHourly = extractSeries(lineObjects, ["DIURESE"]);
   const ganhosHourly = extractSeries(lineObjects, ["Total de Ganhos"]);
 
