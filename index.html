@@ -98,7 +98,32 @@
   .trend-title{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
   .trend-grid{ display:flex; gap:20px; flex-wrap:wrap; }
   .mini-chart .mini-label{ font-size:10px; color:var(--muted); margin-bottom:3px; }
+
+  #printArea{ display:none; }
+  @media print {
+    body *{ visibility:hidden; }
+    #printArea, #printArea *{ visibility:visible; }
+    #printArea{
+      display:block; position:absolute; top:0; left:0; width:100%;
+      background:#fff; color:#111; padding:16px; font-family:Arial, sans-serif;
+    }
+    .print-header{ border-bottom:2px solid #111; padding-bottom:8px; margin-bottom:12px; }
+    .print-header h1{ font-size:18px; margin:0 0 2px 0; }
+    .print-header .meta{ font-size:12px; color:#444; }
+    .print-section{ margin-bottom:14px; page-break-inside:avoid; }
+    .print-section h2{ font-size:13px; text-transform:uppercase; letter-spacing:.04em; margin:0 0 6px 0; border-bottom:1px solid #ccc; padding-bottom:3px; }
+    .print-alert{
+      display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px;
+      border:1px solid #b23; color:#b23; margin:0 6px 6px 0;
+    }
+    .print-stat-grid{ display:flex; flex-wrap:wrap; gap:14px; font-size:12px; }
+    .print-stat-grid div{ min-width:110px; }
+    .print-stat-grid .k{ color:#555; font-size:10px; text-transform:uppercase; display:block; }
+    .print-trend-grid{ display:flex; flex-wrap:wrap; gap:16px; }
+    .print-trend-grid .mini-label{ font-size:10px; color:#555; margin-bottom:2px; }
+  }
 </style>
+<div id="printArea"></div>
 </head>
 <body>
 
@@ -116,6 +141,11 @@
 
 <div class="card" id="reviewCard" style="display:none;">
   <h2>Conferir antes de salvar</h2>
+  <div id="implausibleWarning" style="display:none; background:rgba(217,105,79,0.12); border:1px solid var(--danger); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px;">
+    <div style="color:var(--danger); font-weight:600; margin-bottom:4px;">⚠ Valores fisiologicamente implausíveis foram excluídos do cálculo automático</div>
+    <div id="implausibleList" style="color:var(--text);"></div>
+    <div style="color:var(--muted); margin-top:4px;">Provavelmente erro de digitação no PDF original — confira a fonte. Esses valores NÃO entraram no min-máx, no gráfico nem nos alertas.</div>
+  </div>
   <div class="review-grid">
     <div class="field"><label>Paciente</label><input id="rNome"></div>
     <div class="field"><label>Leito</label><input id="rLeito"></div>
@@ -295,6 +325,33 @@ function minMaxFromSeries(series){
   const vals = series.map(p=>p.value).filter(v=>!isNaN(v));
   if(!vals.length) return {min:"", max:""};
   return {min: Math.min(...vals), max: Math.max(...vals)};
+}
+
+// Absolute physiological plausibility ranges — NOT clinical alert thresholds
+// (those already exist in getAlerts and are meant to catch abnormal-but-real
+// values). This is a much wider band meant only to catch values no living
+// person could have — almost always a transcription error in the source
+// record (e.g. a leito number or a misplaced digit), not a real reading.
+const PLAUSIBLE_RANGES = {
+  fc:   [20, 300],   // bpm
+  fr:   [3, 70],     // rpm
+  pam:  [15, 200],   // mmHg
+  sat:  [40, 100],   // %
+  temp: [25, 43],    // °C
+  glic: [10, 1000]   // mg/dL
+};
+
+function filterPlausible(points, range){
+  const valid = [], excluded = [];
+  points.forEach(p=>{
+    if(p.value >= range[0] && p.value <= range[1]) valid.push(p);
+    else excluded.push(p);
+  });
+  return {valid, excluded};
+}
+
+function toPseudoSeries(nums){
+  return nums.map(v=>({hour: null, value: v}));
 }
 
 // ---------- Vasopressor dose / volume-inertia analysis ----------
@@ -480,12 +537,31 @@ function parseBalanco(lineObjects){
 
   // Text-only fallback (used only if the hour header wasn't found, e.g. a
   // differently-formatted report) — keeps min/max working even without position data.
-  const fc = fcSeries.length ? minMaxFromSeries(fcSeries) : minMax(getRowNumbers(lines, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]));
-  const fr = frSeries.length ? minMaxFromSeries(frSeries) : minMax(getRowNumbers(lines, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]));
-  const pam = pamSeries.length ? minMaxFromSeries(pamSeries) : minMax(getRowNumbers(lines, ["P.A.M","PAM"]));
-  const sat = satSeries.length ? minMaxFromSeries(satSeries) : minMax(getRowNumbers(lines, ["SPO2","SATO2"]));
-  const temp = tempSeries.length ? minMaxFromSeries(tempSeries) : minMax(getRowNumbers(lines, ["TEMPERATURA"]));
-  const glic = glicSeries.length ? glicSeries.map(p=>p.value) : getRowNumbers(lines, ["GLICEMIA"]);
+  // Filter out physiologically-impossible readings (likely a data-entry
+  // error in the source PDF) before computing min/max or the glicemia list.
+  // Excluded values are collected so the review screen can flag them
+  // explicitly — nothing is silently dropped without a trace.
+  const implausible = [];
+  function processVital(label, series, fallbackKeywords, range){
+    const raw = series.length ? series : toPseudoSeries(getRowNumbers(lines, fallbackKeywords));
+    const {valid, excluded} = filterPlausible(raw, range);
+    excluded.forEach(e => implausible.push({param: label, hour: e.hour, value: e.value}));
+    return valid;
+  }
+
+  const fcValid = processVital("FC", fcSeries, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"], PLAUSIBLE_RANGES.fc);
+  const frValid = processVital("FR", frSeries, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"], PLAUSIBLE_RANGES.fr);
+  const pamValid = processVital("PAM", pamSeries, ["P.A.M","PAM"], PLAUSIBLE_RANGES.pam);
+  const satValid = processVital("SatO2", satSeries, ["SPO2","SATO2"], PLAUSIBLE_RANGES.sat);
+  const tempValid = processVital("Temp", tempSeries, ["TEMPERATURA"], PLAUSIBLE_RANGES.temp);
+  const glicValid = processVital("Glicemia", glicSeries, ["GLICEMIA"], PLAUSIBLE_RANGES.glic);
+
+  const fc = minMaxFromSeries(fcValid);
+  const fr = minMaxFromSeries(frValid);
+  const pam = minMaxFromSeries(pamValid);
+  const sat = minMaxFromSeries(satValid);
+  const temp = minMaxFromSeries(tempValid);
+  const glic = glicValid.map(p=>p.value);
 
   const dorArr = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
@@ -493,11 +569,11 @@ function parseBalanco(lineObjects){
   const evacCount = evacArr.length ? evacArr[evacArr.length-1] : null;
 
   const series = {
-    fc: fcSeries, fr: frSeries, pam: pamSeries, sat: satSeries, temp: tempSeries, glic: glicSeries,
+    fc: fcValid, fr: frValid, pam: pamValid, sat: satValid, temp: tempValid, glic: glicValid,
     nora: noraSeries, diureseHourly, ganhosHourly
   };
 
-  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount, series};
+  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount, series, implausible};
 }
 
 // ---------- UI wiring ----------
@@ -518,6 +594,7 @@ fileInput.addEventListener("change", e=>{
 });
 
 let lastParsedSeries = null;
+let lastParsedImplausible = [];
 
 async function handleFile(file){
   statusEl.textContent = "Lendo PDF...";
@@ -527,6 +604,7 @@ async function handleFile(file){
     const lineObjects = await pdfToLineObjects(buf);
     const data = parseBalanco(lineObjects);
     lastParsedSeries = data.series;
+    lastParsedImplausible = data.implausible || [];
     await fillReview(data);
     const hasPositional = Object.values(data.series).some(s=>s.length>0);
     statusEl.textContent = hasPositional
@@ -536,11 +614,12 @@ async function handleFile(file){
   }catch(err){
     console.error(err);
     lastParsedSeries = null;
+    lastParsedImplausible = [];
     statusEl.textContent = "Não consegui ler este PDF automaticamente. Você pode preencher os campos manualmente abaixo.";
     statusEl.className = "err";
     await fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
       fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
-      glic:[],dorSim:"",evacCount:""});
+      glic:[],dorSim:"",evacCount:"",implausible:[]});
   }
 }
 
@@ -562,6 +641,19 @@ async function fillReview(d){
   document.getElementById("rGlic").value = (d.glic||[]).join(", ");
   document.getElementById("rDorSim").value = d.dorSim || "";
   document.getElementById("rEvacCount").value = (d.evacCount === null || d.evacCount === undefined) ? "" : d.evacCount;
+
+  const implausibleBox = document.getElementById("implausibleWarning");
+  const implausibleList = document.getElementById("implausibleList");
+  const implausible = d.implausible || [];
+  if(implausible.length){
+    implausibleList.innerHTML = implausible.map(e =>
+      `• ${e.param}: <strong>${e.value}</strong>${e.hour ? " às " + e.hour : ""}`
+    ).join("<br>");
+    implausibleBox.style.display = "block";
+  } else {
+    implausibleBox.style.display = "none";
+    implausibleList.innerHTML = "";
+  }
 
   // Convenience: pre-fill weight/dilution from the last time they were entered
   // (still fully editable — useful since the same patient often keeps the
@@ -656,6 +748,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     dorSim: document.getElementById("rDorSim").value,
     evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
     series: lastParsedSeries,
+    implausible: lastParsedImplausible,
     peso, noraMg, noraMl, vaso,
     savedAt: new Date().toISOString()
   };
@@ -698,40 +791,74 @@ function parseDatePtBr(str){
   return new Date(parseInt(m[3]), parseInt(m[2])-1, parseInt(m[1]));
 }
 
-function getAlerts(r){
-  const alerts = [];
-  const fcMin = parseFloat(r.fc.min), fcMax = parseFloat(r.fc.max);
-  if(!isNaN(fcMin) && fcMin < 60) alerts.push({level:'warn', text:`Bradicardia (FC mín ${r.fc.min})`});
-  if(!isNaN(fcMax) && fcMax > 100) alerts.push({level:'warn', text:`Taquicardia (FC máx ${r.fc.max})`});
+// Reference thresholds for the vitals alerts — separate from
+// CLINICAL_THRESHOLDS (which governs the vasopressor/inertia logic).
+const ALERT_THRESHOLDS = {
+  fcBradicardia: 60,
+  fcTaquicardia: 100,
+  frBradipneia: 12,
+  frTaquipneia: 24,
+  pamHipotensao: 65,
+  satHipoxemia: 92,
+  tempHipotermia: 35,   // adjusted per clinical feedback — was 36
+  tempFebre: 38,
+  glicHipoglicemia: 70,
+  glicHiperglicemia: 200, // adjusted — was >180, now >=200 counted as "escape"
+  balancoExtremo: 2000,
+  sustainedMinRun: 2    // consecutive readings needed to call something "sustentada", not pontual
+};
 
-  const frMin = parseFloat(r.fr.min), frMax = parseFloat(r.fr.max);
-  if(!isNaN(frMin) && frMin < 12) alerts.push({level:'warn', text:`Bradipneia (FR mín ${r.fr.min})`});
-  if(!isNaN(frMax) && frMax > 24) alerts.push({level:'warn', text:`Taquipneia (FR máx ${r.fr.max})`});
+// Longest run of consecutive readings (in chronological order) matching predicate.
+function longestRun(series, predicate){
+  let maxRun = 0, run = 0;
+  (series||[]).forEach(p=>{
+    if(predicate(p.value)){ run++; maxRun = Math.max(maxRun, run); }
+    else run = 0;
+  });
+  return maxRun;
+}
+
+function getAlerts(r){
+  const t = ALERT_THRESHOLDS;
+  const alerts = [];
+  const s = r.series || {};
+
+  const fcMin = parseFloat(r.fc.min);
+  if(!isNaN(fcMin) && fcMin < t.fcBradicardia) alerts.push({level:'warn', text:`Bradicardia (FC mín ${r.fc.min})`});
+  // Taquicardia só conta como alerta se SUSTENTADA (>=2 leituras seguidas
+  // acima do limiar) — um pico isolado que volta ao normal não dispara mais.
+  const fcTaquiRun = longestRun(s.fc, v=>v > t.fcTaquicardia);
+  if(fcTaquiRun >= t.sustainedMinRun) alerts.push({level:'warn', text:`Taquicardia sustentada (${fcTaquiRun} leituras seguidas >${t.fcTaquicardia}, máx ${r.fc.max})`});
+
+  const frMin = parseFloat(r.fr.min);
+  if(!isNaN(frMin) && frMin < t.frBradipneia) alerts.push({level:'warn', text:`Bradipneia (FR mín ${r.fr.min})`});
+  const frTaquiRun = longestRun(s.fr, v=>v > t.frTaquipneia);
+  if(frTaquiRun >= t.sustainedMinRun) alerts.push({level:'warn', text:`Taquipneia sustentada (${frTaquiRun} leituras seguidas >${t.frTaquipneia}, máx ${r.fr.max})`});
 
   const pamMin = parseFloat(r.pam.min);
-  if(!isNaN(pamMin) && pamMin < 65) alerts.push({level:'warn', text:`Hipotensão (PAM mín ${r.pam.min})`});
+  if(!isNaN(pamMin) && pamMin < t.pamHipotensao) alerts.push({level:'warn', text:`Hipotensão (PAM mín ${r.pam.min})`});
 
   const satMin = parseFloat(r.sat.min);
-  if(!isNaN(satMin) && satMin < 92) alerts.push({level:'warn', text:`Hipoxemia (SatO2 mín ${r.sat.min}%)`});
+  if(!isNaN(satMin) && satMin < t.satHipoxemia) alerts.push({level:'warn', text:`Hipoxemia (SatO2 mín ${r.sat.min}%)`});
 
   const tempMin = parseFloat(r.temp.min), tempMax = parseFloat(r.temp.max);
-  if(!isNaN(tempMin) && tempMin < 36) alerts.push({level:'warn', text:`Hipotermia (Temp mín ${r.temp.min}°C)`});
-  if(!isNaN(tempMax) && tempMax >= 38) alerts.push({level:'warn', text:`Febre (Temp máx ${r.temp.max}°C)`});
+  if(!isNaN(tempMin) && tempMin < t.tempHipotermia) alerts.push({level:'warn', text:`Hipotermia (Temp mín ${r.temp.min}°C)`});
+  if(!isNaN(tempMax) && tempMax >= t.tempFebre) alerts.push({level:'warn', text:`Febre (Temp máx ${r.temp.max}°C)`});
 
-  let hasHipoglic = false, hasHiperglic = false;
+  let hipoglicCount = 0, hiperglicCount = 0;
   (r.glic||[]).forEach(g=>{
     const v = parseFloat(g);
     if(!isNaN(v)){
-      if(v < 70) hasHipoglic = true;
-      if(v > 180) hasHiperglic = true;
+      if(v < t.glicHipoglicemia) hipoglicCount++;
+      if(v >= t.glicHiperglicemia) hiperglicCount++;
     }
   });
-  if(hasHipoglic) alerts.push({level:'warn', text:'Hipoglicemia registrada'});
-  if(hasHiperglic) alerts.push({level:'warn', text:'Hiperglicemia registrada'});
+  if(hipoglicCount>0) alerts.push({level:'warn', text: hipoglicCount===1 ? 'Hipoglicemia registrada' : `${hipoglicCount}x hipoglicemia registrada`});
+  if(hiperglicCount>0) alerts.push({level:'warn', text: `${hiperglicCount} escape${hiperglicCount>1?'s':''} glicêmico${hiperglicCount>1?'s':''} (≥${t.glicHiperglicemia} mg/dL)`});
 
   if(!isNaN(r.balanco)){
-    if(r.balanco > 2000) alerts.push({level:'info', text:`Balanço muito positivo (+${r.balanco} mL)`});
-    if(r.balanco < -2000) alerts.push({level:'info', text:`Balanço muito negativo (${r.balanco} mL)`});
+    if(r.balanco > t.balancoExtremo) alerts.push({level:'info', text:`Balanço muito positivo (+${r.balanco} mL)`});
+    if(r.balanco < -t.balancoExtremo) alerts.push({level:'info', text:`Balanço muito negativo (${r.balanco} mL)`});
   }
 
   return alerts;
@@ -948,6 +1075,85 @@ function buildVasoSection(record){
   `;
 }
 
+function buildPrintReport(p, history){
+  const sorted = history.slice().sort((a,b)=>{
+    const da = parseDatePtBr(a.dataBal), db = parseDatePtBr(b.dataBal);
+    if(!da || !db) return 0;
+    return da - db;
+  });
+  const latest = sorted[sorted.length-1];
+  const alerts = getAlerts(latest);
+  const periodo = sorted.length>1 ? `${sorted[0].dataBal} → ${latest.dataBal}` : latest.dataBal;
+
+  const labels = sorted.map(r=>r.dataBal);
+  const balancoVals = sorted.map(r=> isNaN(r.balanco) ? null : r.balanco);
+  const pamMinVals = sorted.map(r=> r.pam.min===""? null : parseFloat(r.pam.min));
+  const satMinVals = sorted.map(r=> r.sat.min===""? null : parseFloat(r.sat.min));
+  const fcMaxVals = sorted.map(r=> r.fc.max===""? null : parseFloat(r.fc.max));
+  const tempMaxVals = sorted.map(r=> r.temp.max===""? null : parseFloat(r.temp.max));
+
+  const trendCharts = sorted.length >= 2 ? `
+    <div class="print-trend-grid">
+      <div><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#0a7a5f",width:150,height:44})}</div>
+      <div><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#b26a00",width:150,height:44})}</div>
+      <div><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#0a7a5f",width:150,height:44})}</div>
+      <div><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#b23",width:150,height:44})}</div>
+      <div><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#b26a00",width:150,height:44})}</div>
+    </div>
+    <div style="font-size:10px; color:#777; margin-top:4px;">${labels[0]} → ${labels[labels.length-1]}</div>
+  ` : `<div style="font-size:12px; color:#777;">Apenas um plantão registrado — sem evolução para comparar ainda.</div>`;
+
+  const vasoBlock = (latest.peso && latest.vaso) ? `
+    <div class="print-section">
+      <h2>Vasopressor / Balanço (${latest.dataBal})</h2>
+      <div class="print-stat-grid">
+        <div><span class="k">Ganho ponderal 24h</span>${latest.vaso.ganhoPonderalPct!=null ? latest.vaso.ganhoPonderalPct.toFixed(1)+"%" : "—"}${latest.vaso.riscoHiperHidratacao?" ⚠ risco hiper-hidratação":""}</div>
+        <div><span class="k">Horas em inércia volêmica</span>${latest.vaso.horasInercia}h</div>
+      </div>
+    </div>
+  ` : "";
+
+  const implausibleNote = (latest.implausible && latest.implausible.length) ? `
+    <div style="font-size:11px; color:#b23; margin-top:6px;">⚠ ${latest.implausible.length} valor(es) fisiologicamente implausível(is) excluído(s) deste plantão (provável erro de digitação no PDF original)</div>
+  ` : "";
+
+  return `
+    <div class="print-header">
+      <h1>${p.nome}</h1>
+      <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""} · Período: ${periodo} · Impresso em ${new Date().toLocaleDateString('pt-BR')}</div>
+    </div>
+
+    <div class="print-section">
+      <h2>Alertas mais recentes (${latest.dataBal})</h2>
+      ${alerts.length ? alerts.map(a=>`<span class="print-alert">⚠ ${a.text}</span>`).join('') : '<div style="font-size:12px; color:#777;">Sem alertas clínicos relevantes neste plantão.</div>'}
+      ${implausibleNote}
+    </div>
+
+    <div class="print-section">
+      <h2>Balanço do último plantão</h2>
+      <div class="print-stat-grid">
+        <div><span class="k">Diurese</span>${latest.diurese} mL</div>
+        <div><span class="k">Balanço hídrico</span>${latest.balanco>=0?'+':''}${latest.balanco} mL</div>
+        <div><span class="k">FC</span>${latest.fc.min}–${latest.fc.max} bpm</div>
+        <div><span class="k">FR</span>${latest.fr.min}–${latest.fr.max} rpm</div>
+        <div><span class="k">PAM</span>${latest.pam.min}–${latest.pam.max} mmHg</div>
+        <div><span class="k">SatO2</span>${latest.sat.min}–${latest.sat.max}%</div>
+        <div><span class="k">Temp</span>${latest.temp.min}–${latest.temp.max}°C</div>
+        <div><span class="k">Glicemias</span>${(latest.glic||[]).join(", ")||"—"}</div>
+        <div><span class="k">Dor</span>${latest.dorSim||"—"}</div>
+        <div><span class="k">Evacuação</span>${(latest.evacCount==null||latest.evacCount==="")?"sem registro":(latest.evacCount>0?"Presente "+latest.evacCount+"x":"Ausente")}</div>
+      </div>
+    </div>
+
+    <div class="print-section">
+      <h2>Evolução entre plantões</h2>
+      ${trendCharts}
+    </div>
+
+    ${vasoBlock}
+  `;
+}
+
 async function renderPatients(){
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
@@ -971,7 +1177,10 @@ async function renderPatients(){
           <div class="name">${p.nome}</div>
           <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""}</div>
         </div>
-        <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
+        <div style="display:flex; gap:8px;">
+          <button class="print-patient" data-id="${p.id}">Imprimir relatório</button>
+          <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
+        </div>
       </div>
       <div class="cumulative">
         <div class="stat"><div class="label">Diurese acumulada</div><div class="value">${totalDiurese.toFixed(0)} mL</div></div>
@@ -996,6 +1205,7 @@ async function renderPatients(){
           </div>
         </div>
         ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">⚠ ${a.text}</span>`).join('')}</div>` : ''}
+        ${(r.implausible && r.implausible.length) ? `<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">⚠ ${r.implausible.length} valor(es) fisiologicamente implausível(is) excluído(s) do cálculo (prováveis erros de digitação no PDF original)</div>` : ''}
         ${buildIntradaySection(r)}
         ${buildVasoSection(r)}
         <div class="grid">
@@ -1023,6 +1233,17 @@ async function renderPatients(){
       index = index.filter(p=>p.id!==id);
       await storeSet("index_pacientes", JSON.stringify(index));
       renderPatients();
+    });
+  });
+  container.querySelectorAll(".print-patient").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const id = btn.dataset.id;
+      const index = JSON.parse(await storeGet("index_pacientes") || "[]");
+      const p = index.find(x=>x.id===id);
+      let history = JSON.parse(await storeGet("hist_" + id) || "[]");
+      if(!p || !history.length) return;
+      document.getElementById("printArea").innerHTML = buildPrintReport(p, history);
+      window.print();
     });
   });
   container.querySelectorAll(".del-record").forEach(btn=>{
