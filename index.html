@@ -136,6 +136,11 @@
     <div class="field"><label>Temp min–max</label><div class="minmax"><input id="rTempMin" type="number" step="0.1"><input id="rTempMax" type="number" step="0.1"></div></div>
   </div>
   <div class="review-grid">
+    <div class="field"><label>Peso do paciente (kg)</label><input id="rPeso" type="number" step="0.1" placeholder="ex: 70"></div>
+    <div class="field"><label>Noradrenalina — mg total (ampolas)</label><input id="rNoraMg" type="number" step="0.1" placeholder="ex: 16"></div>
+    <div class="field"><label>Noradrenalina — mL total (diluição)</label><input id="rNoraMl" type="number" step="0.1" placeholder="ex: 250"></div>
+  </div>
+  <div class="review-grid">
     <div class="field"><label>Glicemias (separadas por vírgula)</label><input id="rGlic"></div>
     <div class="field"><label>Dor</label>
       <select id="rDorSim" style="width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:7px 8px; color:var(--text); font-size:13px;">
@@ -220,40 +225,55 @@ async function pdfToLineObjects(arrayBuffer){
   return lineObjects;
 }
 
-// Finds the hour-column header (the "07:00 08:00 ... 06:00" row that has NO
-// trailing "Total" column — that's the Sinais Vitais table's header) and
-// returns each hour label's x position.
-function buildHourColumns(lineObjects){
-  for(const lo of lineObjects){
-    const hourItems = lo.items.filter(it => /^\d{2}:\d{2}$/.test(it.str.trim()));
-    if(hourItems.length >= 20 && !/total/i.test(lo.text)){
-      return hourItems.map(it=>({hour: it.str.trim(), x: it.x})).sort((a,b)=>a.x-b.x);
+// Each table (GANHOS, PERDAS, SINAIS VITAIS) has its own hour-column grid —
+// GANHOS/PERDAS include a trailing "Total" column, SINAIS VITAIS doesn't.
+// So instead of one global header, we search BACKWARDS from a given row to
+// find the header that actually belongs to its own table, and also record
+// the "Total" column's x position (if any) so we can exclude that value
+// from the hourly series (it's a row total, not an hourly reading).
+function findHeaderForRow(lineObjects, rowIdx, maxLookback=60){
+  const limit = Math.max(0, rowIdx - maxLookback);
+  for(let i=rowIdx; i>=limit; i--){
+    const hourItems = lineObjects[i].items.filter(it => /^\d{2}:\d{2}$/.test(it.str.trim()));
+    if(hourItems.length >= 20){
+      const cols = hourItems.map(it=>({hour: it.str.trim(), x: it.x})).sort((a,b)=>a.x-b.x);
+      const totalItem = lineObjects[i].items.find(it => /^total$/i.test(it.str.trim()));
+      return {cols, totalX: totalItem ? totalItem.x : null};
     }
   }
   return null;
 }
 
-function nearestHour(x, hourColumns){
+// Returns the matched hour label for x, or null if x actually belongs to
+// the row's "Total" column (closer to Total than to any hour column).
+function nearestHourColumn(x, header){
   let best = null, bestDist = Infinity;
-  hourColumns.forEach(hc=>{
+  header.cols.forEach(hc=>{
     const d = Math.abs(hc.x - x);
     if(d < bestDist){ bestDist = d; best = hc.hour; }
   });
+  if(header.totalX != null && Math.abs(header.totalX - x) < bestDist) return null;
   return best;
 }
 
 // Finds a labeled row (by keyword) and returns its readings as {hour, value}
-// pairs, using x-position to determine the real hour column. Falls back to
+// pairs, using x-position to determine the real hour column (and excluding
+// that row's own "Total" column value, if it has one). Falls back to
 // checking the next couple of lines for rows whose label wraps (e.g.
 // "FREQUENCIA RESPIRATORIA -" / values / "RPM" across 3 lines).
-function extractSeries(lineObjects, keywords, hourColumns, lookahead=3){
-  if(!hourColumns) return [];
+function extractSeries(lineObjects, keywords, lookahead=3){
   const idx = lineObjects.findIndex(lo => keywords.some(k => lo.text.toUpperCase().includes(k.toUpperCase())));
   if(idx === -1) return [];
+  const header = findHeaderForRow(lineObjects, idx);
+  if(!header) return [];
   for(let offset=0; offset<=lookahead && idx+offset<lineObjects.length; offset++){
     const items = lineObjects[idx+offset].items.filter(it => /^-?\d+\.\d+$/.test(it.str.trim()));
     if(items.length){
-      const points = items.map(it => ({hour: nearestHour(it.x, hourColumns), value: parseFloat(it.str)}));
+      const points = [];
+      items.forEach(it=>{
+        const hour = nearestHourColumn(it.x, header);
+        if(hour) points.push({hour, value: parseFloat(it.str)});
+      });
       points.sort((a,b)=> HOURS_ORDER.indexOf(a.hour) - HOURS_ORDER.indexOf(b.hour));
       return points;
     }
@@ -265,6 +285,117 @@ function minMaxFromSeries(series){
   const vals = series.map(p=>p.value).filter(v=>!isNaN(v));
   if(!vals.length) return {min:"", max:""};
   return {min: Math.min(...vals), max: Math.max(...vals)};
+}
+
+// ---------- Vasopressor dose / volume-inertia analysis ----------
+// Reference thresholds — adjustable clinical defaults, not an institutional protocol.
+const CLINICAL_THRESHOLDS = {
+  pamMin: 65,           // mmHg — below this, PAM is considered NOT stable
+  noraLowDose: 0.1,     // mcg/kg/min — "low stable" dose ceiling for the inertia rule
+  noraDeltaFlat: 0.01,  // mcg/kg/min — deltas smaller than this count as "estável"
+  ganhosHighRate: 50    // mL/h — "alto" volume-intake rate for the inertia rule
+};
+
+// mL/h infusion rate -> mcg/kg/min dose, given total mg and total mL of the
+// prepared solution (diluição) and the patient's weight in kg.
+function computeNoraDose(noraSeries, noraMg, noraMl, pesoKg){
+  if(!noraMg || !noraMl || !pesoKg) return noraSeries.map(p=>({...p, mlh:p.value, dose:null}));
+  const concMcgMl = (noraMg * 1000) / noraMl;
+  return noraSeries.map(p=>({
+    hour: p.hour,
+    mlh: p.value,
+    dose: (p.value * concMcgMl) / 60 / pesoKg
+  }));
+}
+
+// Adds hour-to-hour delta and a subindo/descendo/estável trend label.
+function withDeltaTrend(doseSeries){
+  return doseSeries.map((p,i)=>{
+    if(i===0 || p.dose==null || doseSeries[i-1].dose==null){
+      return {...p, delta:null, trend:null};
+    }
+    const delta = p.dose - doseSeries[i-1].dose;
+    const trend = Math.abs(delta) < CLINICAL_THRESHOLDS.noraDeltaFlat ? "estável" : (delta>0 ? "subindo" : "descendo");
+    return {...p, delta, trend};
+  });
+}
+
+// Diurese per recorded interval -> mL/kg/h, dividing by the actual elapsed
+// hours between this reading and the previous one (handles uneven intervals).
+function computeDiureseRelativa(diureseSeries, pesoKg){
+  return diureseSeries.map((p,i)=>{
+    let intervalH = 1;
+    if(i>0){
+      const prevIdx = HOURS_ORDER.indexOf(diureseSeries[i-1].hour);
+      const curIdx = HOURS_ORDER.indexOf(p.hour);
+      intervalH = ((curIdx - prevIdx + 24) % 24) || 1;
+    }
+    const mlkgh = pesoKg ? (p.value / pesoKg / intervalH) : null;
+    return {...p, intervalH, mlkgh};
+  });
+}
+
+// Flags "inércia volêmica": Nora caindo (ou estável em dose baixa) + PAM
+// estável (>=65) + entradas altas ou subindo, TODAS na mesma hora registrada.
+// Hours where one of the three variables simply wasn't measured are left
+// unflagged (never inferred).
+function computeInercia(doseDeltaSeries, pamSeries, ganhosSeries){
+  const t = CLINICAL_THRESHOLDS;
+  const pamByHour = {}; pamSeries.forEach(p=>{ pamByHour[p.hour] = p.value; });
+  const ganhosByHour = {}; ganhosSeries.forEach(p=>{ ganhosByHour[p.hour] = p.value; });
+  return doseDeltaSeries.map((p,i)=>{
+    const pamVal = pamByHour[p.hour];
+    const ganhosVal = ganhosByHour[p.hour];
+    const ganhosPrevVal = i>0 ? ganhosByHour[doseDeltaSeries[i-1].hour] : undefined;
+
+    const noraCond = p.trend === "descendo" || (p.trend === "estável" && p.dose!=null && p.dose <= t.noraLowDose);
+    const pamCond = pamVal!=null && pamVal >= t.pamMin;
+    const ganhosCond = ganhosVal!=null && (ganhosVal > t.ganhosHighRate || (ganhosPrevVal!=null && ganhosVal >= ganhosPrevVal));
+
+    return {
+      ...p,
+      pam: pamVal!=null ? pamVal : null,
+      ganhos: ganhosVal!=null ? ganhosVal : null,
+      inerciaVolemica: !!(noraCond && pamCond && ganhosCond)
+    };
+  });
+}
+
+// Runs the full pipeline and produces the headline metrics + the merged
+// per-hour table used by the chart.
+function buildVasopressorAnalysis(rawSeries, pesoKg, noraMg, noraMl, balancoTotal){
+  const doseSeries = computeNoraDose(rawSeries.nora, noraMg, noraMl, pesoKg);
+  const deltaSeries = withDeltaTrend(doseSeries);
+  const inerciaSeries = computeInercia(deltaSeries, rawSeries.pam, rawSeries.ganhosHourly);
+  const diureseRel = computeDiureseRelativa(rawSeries.diureseHourly, pesoKg);
+
+  const horasInercia = inerciaSeries.reduce((sum,p,i)=>{
+    if(!p.inerciaVolemica) return sum;
+    const prevIdx = i>0 ? HOURS_ORDER.indexOf(inerciaSeries[i-1].hour) : null;
+    const curIdx = HOURS_ORDER.indexOf(p.hour);
+    const intervalH = (i>0 && prevIdx!=null) ? (((curIdx-prevIdx+24)%24) || 1) : 1;
+    return sum + intervalH;
+  }, 0);
+
+  const ganhoPonderalPct = (pesoKg && !isNaN(balancoTotal)) ? (balancoTotal / (pesoKg*1000)) * 100 : null;
+
+  // Balanço do intervalo (mL), por hora — ganhos menos diurese, apenas nas
+  // horas em que pelo menos um dos dois foi de fato registrado no PDF.
+  const ganhosByHour = {}; rawSeries.ganhosHourly.forEach(p=>{ ganhosByHour[p.hour] = p.value; });
+  const diureseByHour = {}; rawSeries.diureseHourly.forEach(p=>{ diureseByHour[p.hour] = p.value; });
+  const allHoursWithFlow = new Set([...Object.keys(ganhosByHour), ...Object.keys(diureseByHour)]);
+  const balancoIntervalo = HOURS_ORDER
+    .filter(h => allHoursWithFlow.has(h))
+    .map(h => ({ hour: h, value: (ganhosByHour[h]||0) - (diureseByHour[h]||0) }));
+
+  return {
+    doseSeries: inerciaSeries,       // nora dose + delta + trend + inércia flag, per hour
+    diureseRel,                      // diurese em mL/kg/h, por intervalo
+    balancoIntervalo,                // balanço (ganhos-diurese) por hora
+    horasInercia,
+    ganhoPonderalPct,
+    riscoHiperHidratacao: ganhoPonderalPct!=null && ganhoPonderalPct > 3
+  };
 }
 
 function extractDecimals(line){
@@ -323,13 +454,19 @@ function parseBalanco(lineObjects){
 
   // Position-based hour-column matching (preferred): each reading is matched
   // to the hour column it's printed under, so trends reflect real time-of-day.
-  const hourColumns = buildHourColumns(lineObjects);
-  const fcSeries = extractSeries(lineObjects, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"], hourColumns);
-  const frSeries = extractSeries(lineObjects, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"], hourColumns);
-  const pamSeries = extractSeries(lineObjects, ["P.A.M","PAM"], hourColumns);
-  const satSeries = extractSeries(lineObjects, ["SPO2","SATO2"], hourColumns);
-  const tempSeries = extractSeries(lineObjects, ["TEMPERATURA"], hourColumns);
-  const glicSeries = extractSeries(lineObjects, ["GLICEMIA"], hourColumns);
+  const fcSeries = extractSeries(lineObjects, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]);
+  const frSeries = extractSeries(lineObjects, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]);
+  const pamSeries = extractSeries(lineObjects, ["P.A.M","PAM"]);
+  const satSeries = extractSeries(lineObjects, ["SPO2","SATO2"]);
+  const tempSeries = extractSeries(lineObjects, ["TEMPERATURA"]);
+  const glicSeries = extractSeries(lineObjects, ["GLICEMIA"]);
+
+  // Extra series needed for the vasopressor / volume-inertia analysis.
+  // noraSeries is the Noradrenalina infusion RATE in mL/h (from the GANHOS
+  // table) — still needs concentration + weight to become an actual dose.
+  const noraSeries = extractSeries(lineObjects, ["NORADRENALINA","NORADRENALIN","NORAD "]);
+  const diureseHourly = extractSeries(lineObjects, ["DIURESE"]);
+  const ganhosHourly = extractSeries(lineObjects, ["Total de Ganhos"]);
 
   // Text-only fallback (used only if the hour header wasn't found, e.g. a
   // differently-formatted report) — keeps min/max working even without position data.
@@ -345,7 +482,10 @@ function parseBalanco(lineObjects){
   const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
   const evacCount = evacArr.length ? evacArr[evacArr.length-1] : null;
 
-  const series = { fc: fcSeries, fr: frSeries, pam: pamSeries, sat: satSeries, temp: tempSeries, glic: glicSeries };
+  const series = {
+    fc: fcSeries, fr: frSeries, pam: pamSeries, sat: satSeries, temp: tempSeries, glic: glicSeries,
+    nora: noraSeries, diureseHourly, ganhosHourly
+  };
 
   return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount, series};
 }
@@ -377,7 +517,7 @@ async function handleFile(file){
     const lineObjects = await pdfToLineObjects(buf);
     const data = parseBalanco(lineObjects);
     lastParsedSeries = data.series;
-    fillReview(data);
+    await fillReview(data);
     const hasPositional = Object.values(data.series).some(s=>s.length>0);
     statusEl.textContent = hasPositional
       ? "PDF lido, com gráfico de tendência no dia disponível. Confira os campos antes de salvar."
@@ -388,13 +528,13 @@ async function handleFile(file){
     lastParsedSeries = null;
     statusEl.textContent = "Não consegui ler este PDF automaticamente. Você pode preencher os campos manualmente abaixo.";
     statusEl.className = "err";
-    fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
+    await fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
       fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
       glic:[],dorSim:"",evacCount:""});
   }
 }
 
-function fillReview(d){
+async function fillReview(d){
   reviewCard.style.display = "block";
   document.getElementById("rNome").value = d.nome || "";
   document.getElementById("rLeito").value = d.leito || "";
@@ -412,6 +552,14 @@ function fillReview(d){
   document.getElementById("rGlic").value = (d.glic||[]).join(", ");
   document.getElementById("rDorSim").value = d.dorSim || "";
   document.getElementById("rEvacCount").value = (d.evacCount === null || d.evacCount === undefined) ? "" : d.evacCount;
+
+  // Convenience: pre-fill weight/dilution from the last time they were entered
+  // (still fully editable — useful since the same patient often keeps the
+  // same prescription across several shifts).
+  const lastSettings = JSON.parse(await storeGet("last_peso_settings") || "{}");
+  document.getElementById("rPeso").value = lastSettings.peso ?? "";
+  document.getElementById("rNoraMg").value = lastSettings.noraMg ?? "";
+  document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
 }
 
 document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
@@ -472,12 +620,23 @@ async function copyToClipboard(text, btn){
 }
 
 document.getElementById("saveBtn").addEventListener("click", async ()=>{
+  const peso = parseFloat(document.getElementById("rPeso").value) || null;
+  const noraMg = parseFloat(document.getElementById("rNoraMg").value) || null;
+  const noraMl = parseFloat(document.getElementById("rNoraMl").value) || null;
+  const balancoVal = parseFloat(document.getElementById("rBalanco").value) || 0;
+
+  await storeSet("last_peso_settings", JSON.stringify({peso, noraMg, noraMl}));
+
+  const vaso = (lastParsedSeries && peso)
+    ? buildVasopressorAnalysis(lastParsedSeries, peso, noraMg, noraMl, balancoVal)
+    : null;
+
   const record = {
     dataBal: document.getElementById("rData").value.trim() || "(sem data)",
     diurese: parseFloat(document.getElementById("rDiurese").value) || 0,
     ganhos: parseFloat(document.getElementById("rGanhos").value) || 0,
     perdas: parseFloat(document.getElementById("rPerdas").value) || 0,
-    balanco: parseFloat(document.getElementById("rBalanco").value) || 0,
+    balanco: balancoVal,
     fc: {min:document.getElementById("rFcMin").value, max:document.getElementById("rFcMax").value},
     fr: {min:document.getElementById("rFrMin").value, max:document.getElementById("rFrMax").value},
     pam: {min:document.getElementById("rPamMin").value, max:document.getElementById("rPamMax").value},
@@ -487,6 +646,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     dorSim: document.getElementById("rDorSim").value,
     evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
     series: lastParsedSeries,
+    peso, noraMg, noraMl, vaso,
     savedAt: new Date().toISOString()
   };
   const nome = document.getElementById("rNome").value.trim() || "Paciente sem nome";
@@ -655,6 +815,129 @@ function buildIntradaySection(record){
   `;
 }
 
+function recordHasNora(record){
+  return !!(record.vaso && record.vaso.doseSeries && record.vaso.doseSeries.some(p=>p.dose!=null));
+}
+
+function buildVasoSummary(record){
+  const v = record.vaso;
+  const pct = v.ganhoPonderalPct;
+  const pctText = pct!=null ? pct.toFixed(1)+"%" : "—";
+  return `
+    <div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:8px; font-size:12px; align-items:center;">
+      <div><span style="color:var(--muted);">Ganho ponderal estimado (24h):</span> <strong>${pctText}</strong></div>
+      ${v.riscoHiperHidratacao ? `<span class="alert-chip alert-warn">⚠ Risco de hiper-hidratação</span>` : ""}
+      <div><span style="color:var(--muted);">Horas em inércia volêmica:</span> <strong>${v.horasInercia}h</strong></div>
+    </div>
+  `;
+}
+
+// Dual real axes (left=PAM mmHg, right=Balanço do intervalo mL) plus two
+// normalized overlays (Nora dose, Débito urinário mL/kg/h) that share the
+// same plot area but have their own independent scale — their real value is
+// always printed next to the last point so nothing is visually "lost".
+function buildDualAxisSVG(record){
+  const vaso = record.vaso;
+  const pamSeries = (record.series && record.series.pam) || [];
+  const w = 640, h = 230;
+  const padL = 46, padR = 54, padT = 16, padB = 26;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const xOf = idx => padL + (idx/23) * plotW;
+
+  const pamVals = pamSeries.map(p=>p.value);
+  const pamMin = pamVals.length ? Math.min(40, ...pamVals) : 40;
+  const pamMax = pamVals.length ? Math.max(100, ...pamVals) : 100;
+  const yPam = v => padT + plotH - ((v-pamMin)/(pamMax-pamMin))*plotH;
+
+  const balVals = (vaso.balancoIntervalo||[]).map(p=>p.value);
+  const balMin = balVals.length ? Math.min(0, ...balVals) : -100;
+  const balMax = balVals.length ? Math.max(100, ...balVals) : 100;
+  const yBal = v => padT + plotH - ((v-balMin)/((balMax-balMin)||1))*plotH;
+
+  const noraVals = (vaso.doseSeries||[]).map(p=>p.dose).filter(v=>v!=null);
+  const noraMin = noraVals.length ? Math.min(...noraVals) : 0;
+  const noraMax = noraVals.length ? Math.max(...noraVals) : 1;
+  const yNora = v => padT + plotH - ((v-noraMin)/((noraMax-noraMin)||1))*plotH;
+
+  const diureseVals = (vaso.diureseRel||[]).map(p=>p.mlkgh).filter(v=>v!=null);
+  const diureseMin = diureseVals.length ? Math.min(...diureseVals) : 0;
+  const diureseMax = diureseVals.length ? Math.max(...diureseVals) : 1;
+  const yDiu = v => padT + plotH - ((v-diureseMin)/((diureseMax-diureseMin)||1))*plotH;
+
+  const bandW = (plotW/23)/2;
+  let bands = "";
+  (vaso.doseSeries||[]).forEach(p=>{
+    if(p.inerciaVolemica){
+      const x = xOf(HOURS_ORDER.indexOf(p.hour));
+      bands += `<rect x="${(x-bandW).toFixed(1)}" y="${padT}" width="${(bandW*2).toFixed(1)}" height="${plotH}" fill="rgba(217,105,79,0.18)"></rect>`;
+    }
+  });
+
+  function pathFor(points, yFn, field, color){
+    const pts = points.filter(p=>p[field]!=null).map(p=>({idx:HOURS_ORDER.indexOf(p.hour), v:p[field]}));
+    if(!pts.length) return {path:"", circles:"", last:null};
+    let path="", circles="";
+    pts.forEach((p,i)=>{
+      const x = xOf(p.idx), y = yFn(p.v);
+      path += (i===0?"M":" L") + x.toFixed(1) + "," + y.toFixed(1);
+      circles += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.3" fill="${color}"></circle>`;
+    });
+    return {path, circles, last: pts[pts.length-1]};
+  }
+
+  const pamLine = pathFor(pamSeries, yPam, "value", "#e0a458");
+  const balLine = pathFor(vaso.balancoIntervalo||[], yBal, "value", "#2fb4a3");
+  const noraLine = pathFor(vaso.doseSeries||[], yNora, "dose", "#d9694f");
+  const diureseLine = pathFor(vaso.diureseRel||[], yDiu, "mlkgh", "#8b7fd6");
+
+  const pamTicks = [pamMin, (pamMin+pamMax)/2, pamMax];
+  const balTicks = [balMin, (balMin+balMax)/2, balMax];
+  const leftTicks = pamTicks.map(v=>`<text x="${padL-6}" y="${(yPam(v)+3).toFixed(1)}" font-size="9" fill="#e0a458" text-anchor="end">${Math.round(v)}</text>`).join("");
+  const rightTicks = balTicks.map(v=>`<text x="${w-padR+6}" y="${(yBal(v)+3).toFixed(1)}" font-size="9" fill="#2fb4a3" text-anchor="start">${Math.round(v)}</text>`).join("");
+  let xTicks = "";
+  for(let i=0;i<24;i+=4){
+    xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#8fa3b3" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
+  }
+
+  return `<svg width="${w}" height="${h}" style="max-width:100%;">
+    ${bands}
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#2a3b48"></line>
+    <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#2a3b48"></line>
+    <line x1="${padL}" y1="${padT+plotH}" x2="${w-padR}" y2="${padT+plotH}" stroke="#2a3b48"></line>
+    ${leftTicks}${rightTicks}${xTicks}
+    <path d="${pamLine.path}" fill="none" stroke="#e0a458" stroke-width="2"></path>${pamLine.circles}
+    <path d="${balLine.path}" fill="none" stroke="#2fb4a3" stroke-width="2"></path>${balLine.circles}
+    <path d="${noraLine.path}" fill="none" stroke="#d9694f" stroke-width="2" stroke-dasharray="4,2"></path>${noraLine.circles}
+    <path d="${diureseLine.path}" fill="none" stroke="#8b7fd6" stroke-width="2" stroke-dasharray="4,2"></path>${diureseLine.circles}
+    ${pamLine.last ? `<text x="${(xOf(pamLine.last.idx)+4).toFixed(1)}" y="${(yPam(pamLine.last.v)-4).toFixed(1)}" font-size="9" fill="#e0a458">PAM ${pamLine.last.v}</text>` : ""}
+    ${balLine.last ? `<text x="${(xOf(balLine.last.idx)+4).toFixed(1)}" y="${(yBal(balLine.last.v)-4).toFixed(1)}" font-size="9" fill="#2fb4a3">Bal ${balLine.last.v.toFixed(0)}mL</text>` : ""}
+    ${noraLine.last ? `<text x="${(xOf(noraLine.last.idx)+4).toFixed(1)}" y="${(yNora(noraLine.last.v)+12).toFixed(1)}" font-size="9" fill="#d9694f">Nora ${noraLine.last.v.toFixed(3)}mcg/kg/min</text>` : ""}
+    ${diureseLine.last ? `<text x="${(xOf(diureseLine.last.idx)+4).toFixed(1)}" y="${(yDiu(diureseLine.last.v)+12).toFixed(1)}" font-size="9" fill="#8b7fd6">DU ${diureseLine.last.v.toFixed(2)}mL/kg/h</text>` : ""}
+  </svg>`;
+}
+
+function buildVasoSection(record){
+  if(!record.peso){
+    return `<div class="trend-section"><div class="trend-title">Análise Clínica Avançada</div><div style="font-size:12px; color:var(--muted);">Informe o peso do paciente ao salvar para habilitar ganho ponderal, débito urinário relativo e inércia volêmica.</div></div>`;
+  }
+  if(!record.vaso) return "";
+  const hasNora = recordHasNora(record);
+  return `
+    <div class="trend-section">
+      <div class="trend-title">Análise Clínica Avançada</div>
+      ${buildVasoSummary(record)}
+      ${hasNora ? `
+        <div style="font-size:10px; color:var(--muted); margin-bottom:6px;">
+          — PAM (mmHg, eixo esq.) &nbsp; — Balanço do intervalo (mL, eixo dir.) &nbsp;
+          ╌ Nora (normalizada, eixo esq.) &nbsp; ╌ Débito urinário (normalizado, eixo dir.) &nbsp;
+          <span style="background:rgba(217,105,79,0.3); padding:1px 6px; border-radius:3px;">fundo = inércia volêmica</span>
+        </div>
+        ${buildDualAxisSVG(record)}
+      ` : `<div style="font-size:12px; color:var(--muted);">Noradrenalina não identificada neste PDF (ou diluição não informada) — inércia volêmica não avaliada, mas ganho ponderal/débito urinário acima já usam o peso informado.</div>`}
+    </div>
+  `;
+}
+
 async function renderPatients(){
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
@@ -704,6 +987,7 @@ async function renderPatients(){
         </div>
         ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">⚠ ${a.text}</span>`).join('')}</div>` : ''}
         ${buildIntradaySection(r)}
+        ${buildVasoSection(r)}
         <div class="grid">
           <div><span class="k">Diurese</span><span class="v">${r.diurese} mL</span></div>
           <div><span class="k">Balanço hídrico</span><span class="v ${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco} mL</span></div>
