@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <title>Controle Acumulado — UTI</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- pdf.js 3.11.174 (build legacy) hospedado no próprio site + polyfills: funciona em navegadores antigos (Cent/Chromium 86) e não depende de CDN -->
+<script src="vendor/polyfills.js"></script>
+<script src="vendor/pdf.min.js"></script>
 <style>
   :root{
     --bg:#0f1720;
@@ -214,7 +216,7 @@
 <footer id="persistNote"></footer>
 
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js"; // inclui os polyfills no início
 
 const HOURS_ORDER = ["07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00",
   "17:00","18:00","19:00","20:00","21:00","22:00","23:00","00:00","01:00","02:00","03:00","04:00","05:00","06:00"];
@@ -794,7 +796,7 @@ async function handleFile(file){
     console.error(err);
     lastParsedSeries = null;
     lastParsedImplausible = [];
-    statusEl.textContent = "Não consegui ler este PDF automaticamente. Você pode preencher os campos manualmente abaixo.";
+    statusEl.textContent = "Não consegui ler este PDF automaticamente (" + (err && err.message ? err.message : err) + "). Você pode preencher os campos manualmente abaixo.";
     statusEl.className = "err";
     await fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
       fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
