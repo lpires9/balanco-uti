@@ -163,9 +163,7 @@
     <div class="field"><label>Hemodiálise / UF (mL)</label><input id="rHd" type="number"></div>
   </div>
   <div class="review-grid">
-    <div class="field"><label>Início do balanço</label><input id="rInicio" placeholder="ex: 13:00"></div>
-    <div class="field"><label>Horas de balanço</label><input id="rHoras" type="number" min="1" max="24" step="1"></div>
-    <div class="field" style="grid-column: span 2;"><label>&nbsp;</label><div id="preUtiNote" style="font-size:11px; color:var(--muted); padding-top:6px;"></div></div>
+    <div class="field"><label>Horas de controle (opcional)</label><input id="rHoras" type="number" min="1" max="24" step="1" placeholder="em branco = # CONTROLES:"></div>
   </div>
   <div class="review-grid">
     <div class="field"><label>FC min–max</label><div class="minmax"><input id="rFcMin" type="number"><input id="rFcMax" type="number"></div></div>
@@ -586,37 +584,6 @@ function textToDrenos(txt){
   }).filter(Boolean);
 }
 
-// ---------- Início do balanço / horas decorridas ----------
-// On the ICU, vitals are charted every 1–2 h. Readings separated from the
-// next ones by a longer gap, at the START of the sheet, are taken as
-// pre-admission (PS/enfermaria/centro cirúrgico) and the balance is counted
-// from the first reading of the dense ICU block. Only small leading clusters
-// (≤2 readings) are dropped, so a long gap later in the day (exame, CC) does
-// not shorten a full 24 h balance.
-const MAX_ICU_GAP_H = 2;
-function computeInicioBalanco(seriesList){
-  const hours = new Set();
-  seriesList.forEach(s => (s||[]).forEach(p => { if(p.hour) hours.add(p.hour); }));
-  let idxs = [...hours].map(h => HOURS_ORDER.indexOf(h)).filter(i => i >= 0).sort((a,b)=>a-b);
-  if(!idxs.length) return {inicio:"", horas:null, preUti:[]};
-  const preUti = [];
-  while(idxs.length > 1){
-    // first run = leading readings separated by ≤ MAX_ICU_GAP_H
-    let runEnd = 0;
-    while(runEnd+1 < idxs.length && idxs[runEnd+1]-idxs[runEnd] <= MAX_ICU_GAP_H) runEnd++;
-    if(runEnd === idxs.length-1) break;          // everything is one dense block
-    if(runEnd+1 > 2) break;                      // leading block is substantial → ICU data
-    preUti.push(...idxs.slice(0, runEnd+1).map(i => HOURS_ORDER[i]));
-    idxs = idxs.slice(runEnd+1);
-  }
-  const startIdx = idxs[0];
-  const lastIdx = idxs[idxs.length-1];
-  // If the last reading is in the final 2 h of the sheet (05:00/06:00), the
-  // balance runs to the 07:00 closing; otherwise it ends one hour after the
-  // last reading (partial sheet printed mid-day).
-  const endIdx = lastIdx >= HOURS_ORDER.length - MAX_ICU_GAP_H ? HOURS_ORDER.length : lastIdx + 1;
-  return {inicio: HOURS_ORDER[startIdx], horas: endIdx - startIdx, preUti};
-}
 
 function parseBalanco(lineObjects){
   const lines = lineObjects.map(l=>l.text);
@@ -698,13 +665,8 @@ function parseBalanco(lineObjects){
     nora: noraSeries, diureseHourly, ganhosHourly, perdasHourly
   };
 
-  // Início do balanço a partir dos horários em que houve sinais vitais
-  // (fallback: qualquer série horária, se o PDF não trouxer vitais).
-  let periodo = computeInicioBalanco([fcSeries, frSeries, pamSeries, satSeries, tempSeries]);
-  if(periodo.horas == null) periodo = computeInicioBalanco([diureseHourly, ganhosHourly, perdasHourly]);
-
   return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount,
-    drenos, hd, inicio: periodo.inicio, horas: periodo.horas, preUti: periodo.preUti, series, implausible};
+    drenos, hd, series, implausible};
 }
 
 // ---------- UI wiring ----------
@@ -766,11 +728,7 @@ async function fillReview(d){
   document.getElementById("rBalanco").value = d.balanco ?? "";
   document.getElementById("rDrenos").value = drenosToText(d.drenos);
   document.getElementById("rHd").value = d.hd ?? "";
-  document.getElementById("rInicio").value = d.inicio || "";
-  document.getElementById("rHoras").value = d.horas ?? "";
-  document.getElementById("preUtiNote").textContent = (d.preUti && d.preUti.length)
-    ? `Registros às ${d.preUti.join(", ")} considerados pré-UTI (intervalo > ${MAX_ICU_GAP_H}h antes do bloco contínuo).`
-    : "";
+  document.getElementById("rHoras").value = "";
   document.getElementById("rFcMin").value = d.fc.min; document.getElementById("rFcMax").value = d.fc.max;
   document.getElementById("rFrMin").value = d.fr.min; document.getElementById("rFrMax").value = d.fr.max;
   document.getElementById("rPamMin").value = d.pam.min; document.getElementById("rPamMax").value = d.pam.max;
@@ -808,7 +766,6 @@ function readExtraFields(){
   return {
     drenos: textToDrenos(document.getElementById("rDrenos").value),
     hd: isNaN(hdVal) ? "" : Math.abs(hdVal),
-    inicio: document.getElementById("rInicio").value.trim(),
     horas: isNaN(horasVal) ? null : horasVal
   };
 }
@@ -840,14 +797,14 @@ document.getElementById("cancelBtn").addEventListener("click", ()=>{
 function buildProntuarioText(r){
   const fmt = (o, unit) => (o.min==="" || o.max==="" || o.min==null || o.max==null) ? "" : `${o.min} - ${o.max} ${unit}`;
   const has = v => v !== "" && v != null;
-  const periodo = r.horas ? ` (${r.horas}h${r.inicio && r.horas < 24 ? ", desde " + r.inicio : ""})` : "";
   const lines = [
-    `Diurese${periodo}: ${has(r.diurese) ? Math.abs(r.diurese) + " mL" : ""}`
+    r.horas ? `# Controles (${r.horas}h):` : `# Controles:`,
+    `Diurese: ${has(r.diurese) ? Math.abs(r.diurese) + " mL" : ""}`
   ];
   (r.drenos||[]).forEach(d => lines.push(`${d.label}: ${d.total} mL`));
   if(has(r.hd)) lines.push(`Hemodi\u00e1lise (UF): ${r.hd} mL`);
   lines.push(
-    `Balan\u00e7o h\u00eddrico${periodo}: ${has(r.balanco) ? (r.balanco>=0?"+":"") + r.balanco + " mL" : ""}`,
+    `Balan\u00e7o h\u00eddrico: ${has(r.balanco) ? (r.balanco>=0?"+":"") + r.balanco + " mL" : ""}`,
     `Fc: ${fmt(r.fc, "bpm")}`,
     `Fr: ${fmt(r.fr, "irpm")}`,
     `Pam: ${fmt(r.pam, "mmHg")}`,
@@ -1290,7 +1247,7 @@ function buildPrintReport(p, history){
     <div class="print-section">
       <h2>Balanço do último plantão</h2>
       <div class="print-stat-grid">
-        <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h${latest.inicio && latest.horas<24 ? ", desde "+latest.inicio : ""})` : ""}</span>${Math.abs(latest.diurese)} mL</div>
+        <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h)` : ""}</span>${Math.abs(latest.diurese)} mL</div>
         ${(latest.drenos||[]).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
         ${(latest.hd!=="" && latest.hd!=null) ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
         <div><span class="k">Balanço hídrico</span>${latest.balanco>=0?'+':''}${latest.balanco} mL</div>
