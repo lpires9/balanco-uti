@@ -17,7 +17,7 @@
   var REPORT_RE = /jasper|\.pdf(\?|#|$)/i;
   var top_ = window;
   var log = (top_.__balancoUTILog = top_.__balancoUTILog || []);
-  function note(s){ log.push(new Date().toTimeString().slice(0,8) + " " + s); if(log.length > 30) log.shift(); }
+  function note(s){ log.push(new Date().toTimeString().slice(0,8) + " " + s); if(log.length > 60) log.shift(); }
 
   function siteWin(){
     var w = top_.__balancoUTIwin;
@@ -76,20 +76,26 @@
   function absUrl(win, u){ try{ return new win.URL(u, win.location.href).href; }catch(e){ return String(u); } }
 
   // ---------- hooks (installed in the top window and every same-origin frame) ----------
+  function short(u){ u = String(u || ""); u = u.replace(/^https?:\/\/[^\/]+/, ""); return u.length > 70 ? u.slice(0,70) + "\u2026" : u; }
+  function safe(name, fn){ try{ fn(); }catch(e){ note("ERRO ao instalar " + name + ": " + e.message); } }
+
   function hook(win){
     try{ if(!win || win.__balancoUTIHooked) return; win.__balancoUTIHooked = true; }catch(e){ return; }
+    top_.__balancoUTIn = (top_.__balancoUTIn || 0) + 1;
+    if(win !== top_) note("quadro monitorado: " + short(win.location.href));
 
     // 1) window.open(reportUrl)
     var origOpen = win.open;
-    win.open = function(url, name, feat){
+    safe("open", function(){ win.open = function(url, name, feat){
       var u = url ? absUrl(win, url) : "";
+      note("window.open(" + short(u || "''") + ", " + (name || "") + ")");
       if(u && REPORT_RE.test(u) && !/^blob:/.test(u)){
         var w = origOpen.call(win, "about:blank", name || "_blank", feat);
         grab(win, u, null, w);
         return w;
       }
       return origOpen.apply(win, arguments);
-    };
+    }; });
 
     // 2) form submission to the report
     function formInit(form){
@@ -106,6 +112,7 @@
     }
     function handleForm(form){
       var action = absUrl(win, form.getAttribute("action") || "");
+      note("form " + (form.getAttribute("method") || "GET").toUpperCase() + " " + short(action) + " alvo=" + (form.getAttribute("target") || ""));
       if(!REPORT_RE.test(action)) return false;
       var x = formInit(form);
       var target = form.getAttribute("target");
@@ -113,20 +120,41 @@
       grab(win, x.url, x.init, w);
       return true;
     }
-    var origSubmit = win.HTMLFormElement.prototype.submit;
-    win.HTMLFormElement.prototype.submit = function(){
-      if(handleForm(this)) return;
-      return origSubmit.apply(this, arguments);
-    };
-    win.document.addEventListener("submit", function(e){
-      if(handleForm(e.target)) e.preventDefault();
-    }, true);
+    safe("form", function(){
+      var FP = win.HTMLFormElement.prototype, origSubmit = FP.submit, origReq = FP.requestSubmit;
+      FP.submit = function(){ if(handleForm(this)) return; return origSubmit.apply(this, arguments); };
+      if(origReq) FP.requestSubmit = function(){ if(handleForm(this)) return; return origReq.apply(this, arguments); };
+      win.document.addEventListener("submit", function(e){ if(handleForm(e.target)) e.preventDefault(); }, true);
+    });
+
+    // links (<a href=... target=_blank>, inclusive a.click() programatico)
+    function handleLink(a, ev){
+      var href = a.href || "";
+      var tgt = a.getAttribute("target") || "";
+      if(tgt || REPORT_RE.test(href)) note("link " + short(href) + " alvo=" + tgt);
+      if(!REPORT_RE.test(href) || /^blob:/.test(href)) return false;
+      if(ev) ev.preventDefault();
+      var w = origOpen.call(win, "about:blank", tgt && tgt !== "_self" ? tgt : "_blank");
+      grab(win, href, null, w);
+      return true;
+    }
+    safe("link", function(){
+      var AP = win.HTMLAnchorElement.prototype, origClick = AP.click;
+      AP.click = function(){ if(handleLink(this, null)) return; return origClick.apply(this, arguments); };
+      win.document.addEventListener("click", function(e){
+        var el = e.target;
+        while(el && el.nodeName !== "A") el = el.parentNode;
+        if(el && el.nodeName === "A") handleLink(el, e);
+      }, true);
+    });
 
     // 3) passive: XHR / fetch that already return the PDF (nothing is re-requested)
+    safe("xhr", function(){
     var XO = win.XMLHttpRequest.prototype.open, XS = win.XMLHttpRequest.prototype.send;
-    win.XMLHttpRequest.prototype.open = function(m, u){ this.__bu = absUrl(win, u); return XO.apply(this, arguments); };
+    win.XMLHttpRequest.prototype.open = function(m, u){ this.__bu = absUrl(win, u); this.__bm = m; return XO.apply(this, arguments); };
     win.XMLHttpRequest.prototype.send = function(){
       var xhr = this;
+      if(xhr.__bu && !/\.(js|css|html|png|gif|svg|woff2?)(\?|$)/i.test(xhr.__bu)) note("XHR " + (xhr.__bm || "") + " " + short(xhr.__bu));
       if(xhr.__bu && REPORT_RE.test(xhr.__bu)){
         note("XHR do relat\u00f3rio: " + xhr.__bu);
         xhr.addEventListener("load", function(){
@@ -138,18 +166,19 @@
       }
       return XS.apply(this, arguments);
     };
-    if(win.fetch){
+    });
+    if(win.fetch) safe("fetch", function(){
       var F = win.__buFetch = win.fetch;
       win.fetch = function(input, init){
         var u = absUrl(win, (input && input.url) || input);
         var pr = F.apply(this, arguments);
+        note("fetch " + short(u));
         if(REPORT_RE.test(u)){
-          note("fetch do relat\u00f3rio: " + u);
           pr.then(function(r){ return r.clone().arrayBuffer(); }).then(function(b){ if(isPdf(b)) send(b); }).catch(function(){});
         }
         return pr;
       };
-    }
+    });
   }
 
   function hookAll(win){
@@ -175,7 +204,7 @@
   }
 
   if(top_.__balancoUTIArmed){
-    alert(TAG + "Captura j\u00e1 est\u00e1 ARMADA nesta tela do MV. Abra o balan\u00e7o normalmente.\n\nDiagn\u00f3stico (\u00faltimos eventos):\n" + (log.length ? log.slice(-10).join("\n") : "nenhum pedido de relat\u00f3rio visto ainda"));
+    alert(TAG + "Captura j\u00e1 est\u00e1 ARMADA nesta tela do MV. Abra o balan\u00e7o normalmente.\n\nDiagn\u00f3stico (" + (top_.__balancoUTIn || 0) + " janela/quadros monitorados; \u00faltimos eventos):\n" + (log.length ? log.slice(-14).join("\n") : "nada registrado"));
     hookAll(top_);
     return;
   }
