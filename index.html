@@ -137,6 +137,15 @@
     <input type="file" id="fileInput" accept="application/pdf">
   </div>
   <div id="status"></div>
+  <details id="mvBookmarklet" style="margin-top:12px; font-size:12px; color:var(--muted);">
+    <summary style="cursor:pointer; color:var(--text);">Enviar direto do MV (sem baixar o PDF)</summary>
+    <div style="margin-top:8px; line-height:1.6;">
+      <b>Instalar (uma vez por computador):</b> mostre a barra de favoritos (Ctrl+Shift+B) e <b>arraste</b> este botão para ela:
+      <a id="bmLink" href="#" style="display:inline-block; margin:6px 4px; padding:5px 12px; border-radius:6px; background:var(--accent, #4f8cc9); color:#fff; text-decoration:none; font-weight:600;">📤 Balanço UTI</a><br>
+      <b>Usar:</b> com o balanço aberto no MV (a aba do PDF), clique no favorito <b>📤 Balanço UTI</b>. Esta página abre e lê o PDF sozinha.<br>
+      Se aparecer uma mensagem de erro, ela diz em que etapa parou. Se nada acontecer ao clicar, o Chrome bloqueou o favorito na aba do PDF.
+    </div>
+  </details>
 </div>
 
 <div class="card" id="reviewCard" style="display:none;">
@@ -720,6 +729,47 @@ dropzone.addEventListener("drop", e=>{
 });
 fileInput.addEventListener("change", e=>{
   if(e.target.files.length) handleFile(e.target.files[0]);
+});
+
+// ---------- Recebimento do PDF enviado pelo favorito "📤 Balanço UTI" ----------
+// O favorito roda na aba do MV (intranet), busca o PDF de novo com a sessão do
+// usuário e o envia para esta janela via postMessage, repetindo até receber a
+// confirmação. Só aceita conteúdo que seja de fato um PDF (%PDF no início).
+const BOOKMARKLET_SRC = String.raw`(async()=>{
+const SITE='https://lpires9.github.io/balanco-uti/';
+if(location.hostname.endsWith('github.io')){alert('Arraste este botão para a barra de favoritos. Depois clique nele com o balanço aberto no MV.');return;}
+const w=window.open(SITE+'#receber','balanco_uti');
+if(!w){alert('[Balanço UTI] O Chrome bloqueou a janela pop-up. Permita pop-ups para este endereço e tente de novo.');return;}
+let url=null;
+if(document.contentType==='application/pdf')url=location.href;
+else{const el=[...document.querySelectorAll('embed,iframe,object')].find(e=>/pdf|jasper/i.test((e.src||e.data||'')+' '+(e.type||'')));if(el)url=el.src||el.data;else if(/\.pdf|jasper/i.test(location.href))url=location.href;}
+if(!url||url==='about:blank'){alert('[Balanço UTI] Etapa 1: não encontrei o PDF nesta aba ('+document.contentType+'). Abra o balanço em PDF e clique de novo.');return;}
+let r,buf;
+try{r=await fetch(url,{credentials:'include'});buf=await r.arrayBuffer();}catch(e){alert('[Balanço UTI] Etapa 2: não consegui buscar o PDF de novo: '+e.message+'\nURL: '+url);return;}
+const head=new TextDecoder().decode(new Uint8Array(buf.slice(0,300)));
+if(!head.startsWith('%PDF')){alert('[Balanço UTI] Etapa 3: o MV devolveu outra coisa em vez do PDF (HTTP '+r.status+', '+(r.headers.get('content-type')||'?')+', '+buf.byteLength+' bytes).\nInício: '+head.replace(/\s+/g,' ').slice(0,150));return;}
+const id=Date.now()+'_'+Math.random();let ok=false,n=0;
+window.addEventListener('message',e=>{if(e.data&&e.data.type==='balanco-recebido'&&e.data.id===id)ok=true;});
+const name=(document.title||'balanco')+'.pdf';
+const t=setInterval(()=>{if(ok||n++>40){clearInterval(t);if(!ok)alert('[Balanço UTI] Etapa 4: o PDF foi lido ('+buf.byteLength+' bytes), mas a página do balanço não respondeu. Verifique se ela abriu.');return;}try{w.postMessage({type:'balanco-pdf',id,name,buf},'https://lpires9.github.io');}catch(e){}},500);
+})();`;
+
+(function setupBookmarklet(){
+  const a = document.getElementById("bmLink");
+  if(a) a.href = "javascript:" + encodeURIComponent(BOOKMARKLET_SRC.replace(/\n/g,""));
+})();
+
+const receivedPdfIds = new Set();
+window.addEventListener("message", (e)=>{
+  const d = e.data;
+  if(!d || d.type !== "balanco-pdf" || !(d.buf instanceof ArrayBuffer)) return;
+  try{ e.source && e.source.postMessage({type:"balanco-recebido", id:d.id}, e.origin === "null" ? "*" : e.origin); }catch(err){}
+  if(receivedPdfIds.has(d.id)) return;
+  receivedPdfIds.add(d.id);
+  const head = new TextDecoder().decode(new Uint8Array(d.buf.slice(0,5)));
+  if(head !== "%PDF-"){ statusEl.textContent = "Recebi um arquivo do MV, mas não é um PDF."; statusEl.className = "err"; return; }
+  window.focus();
+  handleFile(new File([d.buf], d.name || "balanco.pdf", {type:"application/pdf"}));
 });
 
 let lastParsedSeries = null;
