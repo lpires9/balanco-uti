@@ -139,6 +139,12 @@
     <input type="file" id="fileInput" accept="application/pdf">
   </div>
   <div id="status"></div>
+  <div id="watchBox" style="display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:12px;">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button id="watchBtn">📁 Monitorar pasta de Downloads</button>
+      <span id="watchStatus" style="color:var(--muted);">Escolha a pasta onde o navegador salva os PDFs. Depois, no PDF do MV, aperte <b>Ctrl+S</b> e <b>Enter</b>: o balanço entra aqui sozinho.</span>
+    </div>
+  </div>
   <details id="mvBookmarklet" style="margin-top:12px; font-size:12px; color:var(--muted);">
     <summary style="cursor:pointer; color:var(--text);">Enviar direto do MV (sem baixar o PDF)</summary>
     <div style="margin-top:8px; line-height:1.6;">
@@ -763,14 +769,117 @@ window.addEventListener("message", (e)=>{
   const head = new TextDecoder().decode(new Uint8Array(d.buf.slice(0,5)));
   if(head !== "%PDF-"){ statusEl.textContent = "Recebi um arquivo do MV, mas não é um PDF."; statusEl.className = "err"; return; }
   window.focus();
-  const file = new File([d.buf], d.name || "balanco.pdf", {type:"application/pdf"});
+  enqueuePdf(new File([d.buf], d.name || "balanco.pdf", {type:"application/pdf"}));
+});
+
+function enqueuePdf(file){
   if(reviewCard.style.display === "block"){
     pdfQueue.push(file);
     updateQueueNote();
   } else {
     handleFile(file);
   }
-});
+}
+
+// ---------- Monitorar pasta de Downloads (File System Access, Chromium 86+) ----------
+// O usuário salva o PDF do MV (Ctrl+S → Enter) e esta página, que vigia a
+// pasta, lê cada PDF novo automaticamente. Só PDFs salvos DEPOIS de iniciar o
+// monitoramento entram. O acesso à pasta é guardado (IndexedDB) para retomar
+// com um clique na próxima visita.
+const WATCH_INTERVAL_MS = 2000;
+let watchDir = null, watchTimer = null, watchSeen = new Map(), watchStart = 0, watchCount = 0;
+
+function idbHandle(op, value){
+  return new Promise((resolve)=>{
+    try{
+      const req = indexedDB.open("balanco_uti_fs", 1);
+      req.onupgradeneeded = ()=> req.result.createObjectStore("h");
+      req.onerror = ()=> resolve(null);
+      req.onsuccess = ()=>{
+        try{
+          const tx = req.result.transaction("h", op === "get" ? "readonly" : "readwrite");
+          const st = tx.objectStore("h");
+          const r = op === "get" ? st.get("dir") : st.put(value, "dir");
+          r.onsuccess = ()=> resolve(op === "get" ? r.result : true);
+          r.onerror = ()=> resolve(null);
+        }catch(e){ resolve(null); }
+      };
+    }catch(e){ resolve(null); }
+  });
+}
+
+async function listDirFiles(dir){
+  const out = [];
+  const it = dir.values ? dir.values() : (dir.getEntries ? dir.getEntries() : null);
+  if(!it) return out;
+  for await (const h of it){
+    const isFile = h.kind ? h.kind === "file" : h.isFile;
+    if(isFile && /\.pdf$/i.test(h.name)) out.push(h);
+  }
+  return out;
+}
+
+function setWatchStatus(html){ document.getElementById("watchStatus").innerHTML = html; }
+
+async function scanWatchDir(initial){
+  if(!watchDir) return;
+  let files;
+  try{ files = await listDirFiles(watchDir); }
+  catch(e){ stopWatch("Monitoramento parado: " + e.message + ". Clique para retomar."); return; }
+  for(const h of files){
+    let f;
+    try{ f = await h.getFile(); }catch(e){ continue; }
+    const key = h.name, sig = f.lastModified + ":" + f.size;
+    const prev = watchSeen.get(key);
+    watchSeen.set(key, sig);
+    if(initial || prev === sig || f.size === 0) continue;
+    if(f.lastModified < watchStart - 5000) continue;
+    const head = new Uint8Array(await f.slice(0,5).arrayBuffer());
+    if(String.fromCharCode(...head) !== "%PDF-") continue;
+    watchCount++;
+    enqueuePdf(new File([f], f.name, {type:"application/pdf"}));
+  }
+  setWatchStatus(`🟢 Monitorando <b>${watchDir.name}</b> — ${watchCount} PDF(s) lido(s). No PDF do MV: <b>Ctrl+S</b> → <b>Enter</b>.`);
+}
+
+async function startWatch(dir){
+  watchDir = dir; watchSeen = new Map(); watchStart = Date.now();
+  await scanWatchDir(true);            // arquivos já existentes são ignorados
+  clearInterval(watchTimer);
+  watchTimer = setInterval(()=> scanWatchDir(false), WATCH_INTERVAL_MS);
+  document.getElementById("watchBtn").textContent = "⏹ Parar monitoramento";
+}
+function stopWatch(msg){
+  clearInterval(watchTimer); watchTimer = null; watchDir = null;
+  document.getElementById("watchBtn").textContent = "📁 Monitorar pasta de Downloads";
+  setWatchStatus(msg || "Monitoramento parado.");
+}
+
+(async function setupWatch(){
+  if(!("showDirectoryPicker" in window)) return;   // navegador sem suporte: some a opção
+  document.getElementById("watchBox").style.display = "block";
+  const btn = document.getElementById("watchBtn");
+  const saved = await idbHandle("get");
+  if(saved){ btn.textContent = "📁 Retomar monitoramento (" + saved.name + ")"; }
+  btn.addEventListener("click", async ()=>{
+    if(watchTimer){ stopWatch(); return; }
+    try{
+      let dir = await idbHandle("get");
+      if(dir && dir.requestPermission){
+        const perm = await dir.requestPermission({mode:"read"});
+        if(perm !== "granted") dir = null;
+      } else dir = null;
+      if(!dir){
+        dir = await window.showDirectoryPicker();
+        await idbHandle("put", dir);
+      }
+      await startWatch(dir);
+    }catch(e){
+      if(e && e.name === "AbortError") return;
+      setWatchStatus("Não consegui acessar a pasta: " + (e && e.message ? e.message : e));
+    }
+  });
+})();
 
 // Fila de PDFs recebidos do MV enquanto outro balanço está em revisão.
 const pdfQueue = [];
