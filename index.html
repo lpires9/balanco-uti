@@ -144,8 +144,8 @@
     <div style="margin-top:8px; line-height:1.6;">
       <b>Instalar (uma vez por computador):</b> mostre a barra de favoritos (Ctrl+Shift+B) e <b>arraste</b> este botão para ela:
       <a id="bmLink" href="#" style="display:inline-block; margin:6px 4px; padding:5px 12px; border-radius:6px; background:var(--accent, #4f8cc9); color:#fff; text-decoration:none; font-weight:600;">📤 Balanço UTI</a><br>
-      <b>Usar:</b> com o balanço aberto no MV (a aba do PDF), clique no favorito <b>📤 Balanço UTI</b>. Esta página abre e lê o PDF sozinha.<br>
-      Se aparecer uma mensagem de erro, ela diz em que etapa parou. Se nada acontecer ao clicar, o Chrome bloqueou o favorito na aba do PDF.
+      <b>Usar:</b> na <b>tela do MV</b> (antes de abrir o balanço), clique no favorito <b>📤 Balanço UTI</b>: a captura fica <b>armada</b> e esta página abre. Depois abra os balanços no MV normalmente: cada PDF gerado vem direto para cá (vários pacientes em sequência entram numa fila). A captura vale até recarregar a tela do MV.<br>
+      Clicar no favorito de novo mostra um diagnóstico do que foi capturado.
     </div>
   </details>
 </div>
@@ -737,23 +737,15 @@ fileInput.addEventListener("change", e=>{
 // O favorito roda na aba do MV (intranet), busca o PDF de novo com a sessão do
 // usuário e o envia para esta janela via postMessage, repetindo até receber a
 // confirmação. Só aceita conteúdo que seja de fato um PDF (%PDF no início).
-const BOOKMARKLET_SRC = String.raw`(async()=>{
-const SITE='https://lpires9.github.io/balanco-uti/';
-if(location.hostname.endsWith('github.io')){alert('Arraste este botão para a barra de favoritos. Depois clique nele com o balanço aberto no MV.');return;}
-const w=window.open(SITE+'#receber','balanco_uti');
-if(!w){alert('[Balanço UTI] O Chrome bloqueou a janela pop-up. Permita pop-ups para este endereço e tente de novo.');return;}
-let url=null;
-if(document.contentType==='application/pdf')url=location.href;
-else{const el=[...document.querySelectorAll('embed,iframe,object')].find(e=>/pdf|jasper/i.test((e.src||e.data||'')+' '+(e.type||'')));if(el)url=el.src||el.data;else if(/\.pdf|jasper/i.test(location.href))url=location.href;}
-if(!url||url==='about:blank'){alert('[Balanço UTI] Etapa 1: não encontrei o PDF nesta aba ('+document.contentType+'). Abra o balanço em PDF e clique de novo.');return;}
-let r,buf;
-try{r=await fetch(url,{credentials:'include'});buf=await r.arrayBuffer();}catch(e){alert('[Balanço UTI] Etapa 2: não consegui buscar o PDF de novo: '+e.message+'\nURL: '+url);return;}
-const head=new TextDecoder().decode(new Uint8Array(buf.slice(0,300)));
-if(!head.startsWith('%PDF')){alert('[Balanço UTI] Etapa 3: o MV devolveu outra coisa em vez do PDF (HTTP '+r.status+', '+(r.headers.get('content-type')||'?')+', '+buf.byteLength+' bytes).\nInício: '+head.replace(/\s+/g,' ').slice(0,150));return;}
-const id=Date.now()+'_'+Math.random();let ok=false,n=0;
-window.addEventListener('message',e=>{if(e.data&&e.data.type==='balanco-recebido'&&e.data.id===id)ok=true;});
-const name=(document.title||'balanco')+'.pdf';
-const t=setInterval(()=>{if(ok||n++>40){clearInterval(t);if(!ok)alert('[Balanço UTI] Etapa 4: o PDF foi lido ('+buf.byteLength+' bytes), mas a página do balanço não respondeu. Verifique se ela abriu.');return;}try{w.postMessage({type:'balanco-pdf',id,name,buf},'https://lpires9.github.io');}catch(e){}},500);
+const BOOKMARKLET_SRC = String.raw`(function(){
+var SITE='https://lpires9.github.io/balanco-uti/';
+if(location.hostname.indexOf('github.io')>=0){alert('Arraste este botão para a barra de favoritos. Depois clique nele na tela do MV.');return;}
+var w=window.__balancoUTIwin;if(!w||w.closed){w=window.open(SITE+'#receber','balanco_uti');window.__balancoUTIwin=w;}
+if(!w){alert('[Balanço UTI] O navegador bloqueou a janela do site. Permita pop-ups para '+location.host+' e clique de novo.');return;}
+window.focus();
+var s=document.createElement('script');s.charset='utf-8';s.src=SITE+'mv.js?v='+Date.now();
+s.onerror=function(){alert('[Balanço UTI] Não consegui carregar o script do site (rede/bloqueio do hospital).');};
+(document.head||document.documentElement).appendChild(s);
 })();`;
 
 (function setupBookmarklet(){
@@ -771,8 +763,31 @@ window.addEventListener("message", (e)=>{
   const head = new TextDecoder().decode(new Uint8Array(d.buf.slice(0,5)));
   if(head !== "%PDF-"){ statusEl.textContent = "Recebi um arquivo do MV, mas não é um PDF."; statusEl.className = "err"; return; }
   window.focus();
-  handleFile(new File([d.buf], d.name || "balanco.pdf", {type:"application/pdf"}));
+  const file = new File([d.buf], d.name || "balanco.pdf", {type:"application/pdf"});
+  if(reviewCard.style.display === "block"){
+    pdfQueue.push(file);
+    updateQueueNote();
+  } else {
+    handleFile(file);
+  }
 });
+
+// Fila de PDFs recebidos do MV enquanto outro balanço está em revisão.
+const pdfQueue = [];
+function updateQueueNote(){
+  let el = document.getElementById("queueNote");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "queueNote";
+    el.style.cssText = "margin:6px 0; font-size:12px; color:var(--accent, #4f8cc9); font-weight:600;";
+    reviewCard.insertBefore(el, reviewCard.children[1]);
+  }
+  el.textContent = pdfQueue.length ? `📥 ${pdfQueue.length} balanço(s) na fila — aparecem ao salvar ou cancelar este.` : "";
+}
+function nextInQueue(){
+  updateQueueNote();
+  if(pdfQueue.length){ const f = pdfQueue.shift(); updateQueueNote(); handleFile(f); }
+}
 
 let lastParsedSeries = null;
 let lastParsedImplausible = [];
@@ -881,6 +896,7 @@ document.getElementById("cancelBtn").addEventListener("click", ()=>{
   reviewCard.style.display = "none";
   fileInput.value = "";
   statusEl.textContent = "";
+  nextInQueue();
 });
 
 // Texto para o prontuário — sempre em MAIÚSCULAS (padrão da UTI) e com unidades.
@@ -982,6 +998,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   statusEl.textContent = "Registro salvo no histórico de " + nome + ".";
   statusEl.className = "ok";
   renderPatients();
+  nextInQueue();
 });
 
 function fmtRange(o){
