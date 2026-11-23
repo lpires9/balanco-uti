@@ -147,6 +147,18 @@
   </div>
 </div>
 
+<div class="card" id="examCard" style="display:none;">
+  <h2>Exames — conferir</h2>
+  <div id="examMeta" style="font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
+  <textarea id="examText" rows="9" style="width:100%; font-family:ui-monospace,Consolas,monospace; font-size:12px; box-sizing:border-box;"></textarea>
+  <div style="font-size:11px; color:var(--muted); margin:4px 0 10px;">Entre parênteses: resultado anterior informado pelo laboratório. O texto pode ser editado antes de copiar.</div>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <button class="primary" id="examCopyBtn">Copiar p/ prontuário</button>
+    <button id="examSaveBtn">Salvar no paciente</button>
+    <button id="examCancelBtn">Cancelar</button>
+  </div>
+</div>
+
 <div class="card" id="reviewCard" style="display:none;">
   <h2>Conferir antes de salvar</h2>
   <div id="implausibleWarning" style="display:none; background:rgba(217,105,79,0.12); border:1px solid var(--danger); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px;">
@@ -731,13 +743,218 @@ fileInput.addEventListener("change", e=>{
 });
 
 function enqueuePdf(file){
-  if(reviewCard.style.display === "block"){
+  if(reviewCard.style.display === "block" || document.getElementById("examCard").style.display === "block"){
     pdfQueue.push(file);
     updateQueueNote();
   } else {
     handleFile(file);
   }
 }
+
+// ---------- Exames laboratoriais (laudo do laboratório, mesmo fluxo do balanço) ----------
+// O laudo vem em blocos: TÍTULO DO EXAME → "Material:" → "Método:" →
+// "Resultado: valor" (ou linhas próprias no hemograma/coagulograma/bilirrubinas)
+// → "Resultados Anteriores: v (data) ..." → "Coletado em: data às hora".
+// O título é a linha logo antes de "Material:". O paciente é ligado ao
+// histórico pelo nº de atendimento (mesmo id do balanço).
+function isExamPdf(lineObjects){
+  const t = norm(lineObjects.map(l=>l.text).join("\n"));
+  if(t.includes("TOTAL DE GANHOS") || t.includes("BALANCO HIDRICO")) return false;
+  return /\bMATERIAL\b/.test(t) && (/RESULTADO/.test(t) || /VALOR(ES)? DE REFERENCIA/.test(t));
+}
+
+// Abreviações usuais em evolução de UTI. A ordem importa (mais específico primeiro).
+const EXAM_ABBR = [
+  [/CALCIO IONICO|CALCIO IONIZADO/, "CAI", "eletro"], [/CALCIO/, "CA", "eletro"],
+  [/POTASSIO/, "K", "eletro"], [/SODIO/, "NA", "eletro"], [/MAGNESIO/, "MG", "eletro"],
+  [/FOSFORO|FOSFATO/, "P", "eletro"], [/CLORO|CLORETO/, "CL", "eletro"],
+  [/UREIA/, "UR", "renal"], [/CREATININA/, "CR", "renal"],
+  [/PROTEINA C REATIVA|\bPCR\b/, "PCR", "infl"], [/PROCALCITONINA/, "PCT", "infl"],
+  [/TROPONINA/, "TROPO", "infl"], [/CKMB|CK-MB|CK MB/, "CKMB", "infl"],
+  [/CPK|CREATINOFOSFOQUINASE|CREATINOQUINASE|\bCK\b/, "CPK", "infl"],
+  [/BNP/, "BNP", "infl"], [/LACTATO|ACIDO LATICO/, "LAC", "infl"],
+  [/TGO|\bAST\b|ASPARTATO/, "TGO", "hep"], [/TGP|\bALT\b|ALANINA/, "TGP", "hep"],
+  [/FOSFATASE ALCALINA/, "FA", "hep"], [/GAMA|GGT/, "GGT", "hep"],
+  [/ALBUMINA/, "ALB", "hep"], [/AMILASE/, "AMIL", "hep"], [/LIPASE/, "LIP", "hep"],
+  [/D-DIMERO|D DIMERO|DIMERO/, "DD", "coag"], [/FIBRINOGENIO/, "FIBRIN", "coag"],
+  [/GLICOSE|GLICEMIA/, "GLIC", "outros"], [/DHL|LDH|DESIDROGENASE LATICA/, "DHL", "infl"]
+];
+// Linhas do texto: hemograma | renal+eletrólitos | hepático | coagulação | inflamatórios/cardíacos | gaso | outros
+const EXAM_LINES = [["hemato"],["renal","eletro"],["hep"],["coag"],["infl"],["gaso"],["outros"]];
+const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","UR","CR","NA","K","MG","CA","CAI","P","CL",
+  "BT","BD","BI","TGO","TGP","FA","GGT","ALB","AMIL","LIP","TAP","ATV","INR","TTPA","RATIO","FIBRIN","DD",
+  "PCR","PCT","LAC","TROPO","CKMB","CPK","DHL","BNP"];
+
+// "13056,8" / "461000" / "<0,040" → string as printed; num → Number.
+function examNum(str){
+  const m = String(str).match(/[<>]?\s*-?\d+(?:[.,]\d+)?/);
+  return m ? m[0].replace(/\s+/g,"") : null;
+}
+function thousands(v){
+  const n = parseFloat(String(v).replace(/\./g,"").replace(",","."));
+  if(isNaN(n)) return v;
+  return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+function parseExames(lineObjects){
+  const lines = lineObjects.map(l=>l.text);
+  const N = lines.map(norm);
+  const out = {nome:"", atend:"", coleta:"", liberacao:"", items:[]};
+
+  const all = lines.join("\n");
+  let m;
+  if((m = all.match(/Paciente:\s*(.+?)\s*(?:-\s*Nome da M|$)/m))) out.nome = m[1].trim();
+  if((m = all.match(/Atendimento:\s*(\d+)/))) out.atend = m[1];
+  if((m = all.match(/Data da Libera\S*\s*:?\s*(\d{2}\/\d{2}\/\d{4})/))) out.liberacao = m[1];
+  const coletas = [...all.matchAll(/Coletado em:\s*(\d{2}\/\d{2}\/\d{4})\s*(?:às|as)?\s*(\d{2}:\d{2})?/gi)].map(x=>x[1] + (x[2] ? " " + x[2] : ""));
+  out.coleta = coletas.length ? coletas.sort()[0] : out.liberacao;
+
+  // Header/rodapé repetidos em cada página não fazem parte dos blocos.
+  const isNoise = t => /^(PACIENTE:|REGISTRO:|CONVENIO:|N. ATENDIMENTO|DATA DA LIBERA|LOCAL DE ENTRADA|ASSINADO ELETRONICAMENTE|OS EXAMES LABORATORIAIS|FISIOLOGICAS|OS RESULTADOS COM|SE NECESSARIO|AVENIDA|CEP:|CNPJ)/.test(t) || /CRB[MF]\s*\d+\s*$/.test(t) || /^[¯_\-\s]+$/.test(t);
+
+  // Blocos: título = última linha "útil" antes de "Material".
+  const starts = [];
+  for(let i=0;i<N.length;i++){
+    if(/^MATERIAL\b/.test(N[i])){
+      let j = i-1;
+      while(j>=0 && isNoise(N[j])) j--;
+      if(j>=0) starts.push(j);
+    }
+  }
+  const blocks = starts.map((st, k)=>({title: lines[st].trim(), tn: N[st], from: st, to: k+1<starts.length ? starts[k+1] : lines.length}));
+
+  const add = (key, label, value, group, prev) => {
+    if(value == null || value === "") return;
+    out.items.push({key, label, value, group, prev: prev || null});
+  };
+
+  blocks.forEach(b=>{
+    const body = lines.slice(b.from+1, b.to);
+    const bodyN = N.slice(b.from+1, b.to);
+    const find = re => { for(let i=0;i<bodyN.length;i++){ const mm = bodyN[i].match(re); if(mm) return {m:mm, raw: body[i]}; } return null; };
+    let prev = null;
+    const pf = find(/^RESULTADOS ANTERIORES:\s*([<>]?\s*-?\d+(?:[.,]\d+)?)\s*\((\d{2}\/\d{2})/);
+    if(pf) prev = {value: examNum(pf.m[1]), date: pf.m[2]};
+
+    if(/HEMOGRAMA/.test(b.tn)){
+      const val = re => { const f = find(re); return f ? examNum(f.raw.split(":").slice(1).join(":") || f.raw) : null; };
+      add("HB","HB", val(/^HGB\b/), "hemato");
+      add("HT","HT", val(/^HCT\b/), "hemato");
+      const leu = find(/^LEUCOCITOS\b/);
+      const lv = leu ? examNum(leu.raw.replace(/^[^\d]*/,"")) : null;
+      const rel = re => { const f = find(re); return f ? examNum(f.raw.replace(/^[^\d]*/,"")) : null; };
+      const diff = [["BAST", rel(/^BASTONETES/)], ["SEG", rel(/^SEGMENTADOS/)], ["LINF", rel(/^LINFOCITOS/)]].filter(x=>x[1]!=null);
+      if(lv) add("LEUCO","LEUCO", thousands(lv) + (diff.length ? " (" + diff.map(x=>x[0]+" "+x[1]+"%").join(" / ") + ")" : ""), "hemato");
+      const pl = find(/^PLAQUETAS\b/);
+      if(pl) add("PLAQ","PLAQ", thousands(examNum(pl.raw.replace(/^[^\d]*/,""))), "hemato");
+      return;
+    }
+    if(/BILIRRUBINA/.test(b.tn)){
+      [["BT",/^BILIRRUBINA TOTAL/],["BD",/^BILIRRUBINA DIRETA/],["BI",/^BILIRRUBINA INDIRETA/]].forEach(([k,re])=>{
+        const f = find(re); if(f) add(k, k, examNum(f.raw.replace(/^[^\d]*/,"")), "hep");
+      });
+      return;
+    }
+    if(/^TAP\b|PROTROMBINA/.test(b.tn)){
+      const sg = find(/^SEGUNDOS\b/), at = find(/^ATIVIDADE\b/), inr = find(/^INR\b/);
+      if(sg) add("TAP","TAP", examNum(sg.raw.replace(/^[^\d]*/,"")) + "S", "coag");
+      if(at) add("ATV","ATV", examNum(at.raw.replace(/^[^\d]*/,"")) + "%", "coag");
+      if(inr) add("INR","INR", examNum(inr.raw.replace(/^[^\d]*/,"")), "coag");
+      return;
+    }
+    if(/^TTPA\b|TROMBOPLASTINA/.test(b.tn)){
+      const sg = find(/^SEGUNDOS\b/), ra = find(/^RATIO\b.*\d/);
+      if(sg) add("TTPA","TTPA", examNum(sg.raw.replace(/^[^\d]*/,"")) + "S", "coag");
+      if(ra) add("RATIO","RATIO", examNum(ra.raw.replace(/^[^\d]*/,"")), "coag");
+      return;
+    }
+    if(/GASOMETRIA/.test(b.tn)){
+      const tipo = /VENOSA/.test(b.tn) ? "GASO VEN" : "GASO ART";
+      const parts = [];
+      [["PH",/^PH\b/],["PCO2",/^PCO2\b/],["PO2",/^PO2\b/],["HCO3",/^HCO3|^BICARBONATO/],["BE",/^BE\b|^EXCESSO DE BASE|^BASE EXCESS/],["SAT",/^SAT|^SO2/],["LAC",/^LACTATO/]].forEach(([k,re])=>{
+        const f = find(re); if(f){ const v = examNum(f.raw.replace(/^[^\d<>-]*(?=[<>-]?\d)/,"")); if(v!=null) parts.push(k + " " + v); }
+      });
+      if(parts.length) add(tipo, tipo, parts.join(" | "), "gaso");
+      return;
+    }
+    // Genérico: "Resultado: valor"
+    const r = find(/^RESULTADO\b[\s.:]*[<>]?\s*-?\d/);
+    if(!r) return;
+    const value = examNum(r.raw.replace(/^[^:]*:?\s*/,"").replace(/^[.\s]*/,""));
+    const ab = EXAM_ABBR.find(([re])=>re.test(b.tn));
+    const label = ab ? ab[1] : b.title.replace(/\s*-.*$/,"").slice(0,18).toUpperCase();
+    add(label, label, value, ab ? ab[2] : "outros", prev);
+  });
+  return out;
+}
+
+function buildExamText(ex){
+  const byGroup = {};
+  ex.items.forEach(it=>{ (byGroup[it.group] = byGroup[it.group] || []).push(it); });
+  const fmtItem = it => `${it.label} ${it.value}` + (it.prev && it.prev.value != null ? ` (${it.prev.value})` : "");
+  const rank = it => { const i = EXAM_KEY_ORDER.indexOf(it.key); return i < 0 ? 999 : i; };
+  const lines = [`# Exames${ex.coleta ? " " + ex.coleta.split(" ")[0] : ""}:`];
+  EXAM_LINES.forEach(groups=>{
+    const its = [].concat(...groups.map(g=>byGroup[g]||[])).sort((a,b)=>rank(a)-rank(b));
+    if(!its.length) return;
+    if(groups[0] === "gaso") its.forEach(it=> lines.push(`${it.label}: ${it.value}`));
+    else lines.push(its.map(fmtItem).join(" | "));
+  });
+  return lines.join("\n").toUpperCase();
+}
+
+// "22/11/2026 03:41" → "202611220341" (ordenável)
+function coletaKey(c){
+  const m = String(c||"").match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+  return m ? m[3]+m[2]+m[1]+(m[4]||"00")+(m[5]||"00") : "";
+}
+let currentExam = null;
+function showExamReview(ex){
+  currentExam = ex;
+  const card = document.getElementById("examCard");
+  card.style.display = "block";
+  document.getElementById("examMeta").textContent =
+    `${ex.nome || "Paciente não identificado"}${ex.atend ? " · Atendimento " + ex.atend : ""} · Coleta ${ex.coleta || "?"} · ${ex.items.length} resultado(s) lido(s)`;
+  document.getElementById("examText").value = ex.items.length ? buildExamText(ex) : "";
+  statusEl.textContent = ex.items.length
+    ? "Exames lidos. Confira o texto antes de copiar."
+    : "PDF de exames reconhecido, mas não encontrei resultados neste layout.";
+  statusEl.className = ex.items.length ? "ok" : "err";
+  card.scrollIntoView({behavior:"smooth", block:"start"});
+  updateQueueNote();
+}
+function closeExamReview(){
+  document.getElementById("examCard").style.display = "none";
+  currentExam = null;
+  fileInput.value = "";
+  nextInQueue();
+}
+document.getElementById("examCopyBtn").addEventListener("click", (e)=>{
+  copyToClipboard(document.getElementById("examText").value.toUpperCase(), e.currentTarget);
+});
+document.getElementById("examCancelBtn").addEventListener("click", ()=>{ statusEl.textContent = ""; closeExamReview(); });
+document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
+  if(!currentExam) return;
+  const ex = currentExam;
+  const nome = ex.nome || "Paciente sem nome";
+  const patientId = ex.atend ? ("atd_" + ex.atend) : ("nm_" + nome.replace(/\s+/g,"_"));
+  let list = JSON.parse(await storeGet("exam_" + patientId) || "[]");
+  const text = document.getElementById("examText").value.toUpperCase();
+  // mesmo pedido/coleta salvo de novo substitui o anterior
+  list = list.filter(x => x.coleta !== ex.coleta);
+  list.push({coleta: ex.coleta, items: ex.items, text, savedAt: new Date().toISOString()});
+  list.sort((a,b)=> coletaKey(a.coleta).localeCompare(coletaKey(b.coleta)));
+  await storeSet("exam_" + patientId, JSON.stringify(list));
+  let index = JSON.parse(await storeGet("index_pacientes") || "[]");
+  if(!index.find(p=>p.id===patientId)){
+    index.push({id:patientId, nome, leito:"—", atend: ex.atend || ""});
+    await storeSet("index_pacientes", JSON.stringify(index));
+  }
+  statusEl.textContent = "Exames salvos no histórico de " + nome + ".";
+  statusEl.className = "ok";
+  closeExamReview();
+  renderPatients();
+});
 
 // ---------- Monitorar pasta de Downloads (File System Access, Chromium 86+) ----------
 // O usuário salva o PDF do MV (Ctrl+S → Enter) e esta página, que vigia a
@@ -849,7 +1066,11 @@ function updateQueueNote(){
     el.style.cssText = "margin:6px 0; font-size:12px; color:var(--accent, #4f8cc9); font-weight:600;";
     reviewCard.insertBefore(el, reviewCard.children[1]);
   }
-  el.textContent = pdfQueue.length ? `📥 ${pdfQueue.length} balanço(s) na fila — aparecem ao salvar ou cancelar este.` : "";
+  // a nota aparece no cartão que estiver aberto
+  const ec = document.getElementById("examCard");
+  if(ec.style.display === "block" && el.parentNode !== ec){ ec.insertBefore(el, ec.children[1]); }
+  else if(reviewCard.style.display === "block" && el.parentNode !== reviewCard){ reviewCard.insertBefore(el, reviewCard.children[1]); }
+  el.textContent = pdfQueue.length ? `📥 ${pdfQueue.length} PDF(s) na fila — aparecem ao salvar ou cancelar este.` : "";
 }
 function nextInQueue(){
   updateQueueNote();
@@ -865,6 +1086,10 @@ async function handleFile(file){
   try{
     const buf = await file.arrayBuffer();
     const lineObjects = await pdfToLineObjects(buf);
+    if(isExamPdf(lineObjects)){
+      showExamReview(parseExames(lineObjects));
+      return;
+    }
     const data = parseBalanco(lineObjects);
     lastParsedSeries = data.series;
     lastParsedImplausible = data.implausible || [];
@@ -1445,6 +1670,25 @@ function buildPrintReport(p, history){
   `;
 }
 
+// Exames salvos do paciente: o mais recente aberto, os anteriores recolhidos.
+function buildExamSection(pid, exams){
+  if(!exams || !exams.length) return "";
+  const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const row = (e, i, open) => `
+    <details ${open ? "open" : ""} style="margin:4px 0;">
+      <summary style="cursor:pointer; font-size:12px;"><b>Exames ${esc(e.coleta || "")}</b>
+        <button class="del-btn copy-exam" data-id="${pid}" data-idx="${i}" style="margin-left:8px;">Copiar p/ prontuário</button>
+        <button class="danger del-btn del-exam" data-id="${pid}" data-idx="${i}">Excluir</button>
+      </summary>
+      <pre style="white-space:pre-wrap; font-size:11.5px; margin:6px 0 0; padding:8px; background:var(--bg2, rgba(127,127,127,.08)); border-radius:6px;">${esc(e.text)}</pre>
+    </details>`;
+  const n = exams.length;
+  return `<div class="record"><div class="rec-head"><div class="rec-date">Exames laboratoriais (${n})</div></div>
+    ${row(exams[n-1], n-1, true)}
+    ${exams.slice(0, n-1).map((e,i)=>({e,i})).reverse().map(({e,i})=>row(e,i,false)).join("")}
+  </div>`;
+}
+
 async function renderPatients(){
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
@@ -1457,6 +1701,7 @@ async function renderPatients(){
   for(const p of index){
     let history = await storeGet("hist_" + p.id);
     history = history ? JSON.parse(history) : [];
+    const exams = JSON.parse(await storeGet("exam_" + p.id) || "[]");
     const totalDiurese = history.reduce((a,r)=>a+(r.diurese||0),0);
     const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
 
@@ -1473,12 +1718,13 @@ async function renderPatients(){
           <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
         </div>
       </div>
-      <div class="cumulative">
+      <div class="cumulative" style="${history.length ? "" : "display:none;"}">
         <div class="stat"><div class="label">Diurese acumulada</div><div class="value">${totalDiurese.toFixed(0)} mL</div></div>
         <div class="stat"><div class="label">Balanço hídrico acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
         <div class="stat"><div class="label">Registros</div><div class="value">${history.length}</div></div>
       </div>
-      ${buildTrendSection(history)}
+      ${history.length ? buildTrendSection(history) : ""}
+      ${buildExamSection(p.id, exams)}
       <div class="records"></div>
     `;
     const recDiv = block.querySelector(".records");
@@ -1545,6 +1791,23 @@ async function renderPatients(){
       let history = JSON.parse(await storeGet("hist_" + id) || "[]");
       history.splice(idx,1);
       await storeSet("hist_" + id, JSON.stringify(history));
+      renderPatients();
+    });
+  });
+  container.querySelectorAll(".copy-exam").forEach(btn=>{
+    btn.addEventListener("click", async (ev)=>{
+      ev.preventDefault(); ev.stopPropagation();
+      const list = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
+      const e = list[parseInt(btn.dataset.idx)];
+      if(e) copyToClipboard(e.text, btn);
+    });
+  });
+  container.querySelectorAll(".del-exam").forEach(btn=>{
+    btn.addEventListener("click", async (ev)=>{
+      ev.preventDefault(); ev.stopPropagation();
+      const list = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
+      list.splice(parseInt(btn.dataset.idx), 1);
+      await storeSet("exam_" + btn.dataset.id, JSON.stringify(list));
       renderPatients();
     });
   });
