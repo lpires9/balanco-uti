@@ -186,7 +186,8 @@
         <option value="Não">Não</option>
       </select>
     </div>
-    <div class="field"><label>Evacuação (nº de vezes)</label><input id="rEvacCount" type="number" min="0" step="1"></div>
+    <div class="field"><label>Evacuação (nº de episódios)</label><input id="rEvacCount" type="number" min="0" step="1"></div>
+    <div class="field"><label>Evacuação (volume mL)</label><input id="rEvacVol" type="number" min="0" step="1"></div>
   </div>
   <div style="display:flex; gap:10px; margin-top:6px;">
     <button class="primary" id="saveBtn">Salvar no histórico</button>
@@ -504,6 +505,26 @@ function findField(lines, label, stopPattern){
   return rest.trim();
 }
 
+// Acima deste valor, um registro de evacuação é volume (mL), não nº de episódios.
+const EVAC_VOLUME_LIMIAR = 50;
+
+// Normaliza evacuação {evacCount, evacVol} — inclusive registros antigos em que
+// um volume (ex: 200) foi salvo como "nº de vezes".
+function evacInfo(r){
+  const n = v => (v === "" || v === null || v === undefined || isNaN(v)) ? 0 : Math.abs(Number(v));
+  let count = n(r.evacCount), vol = n(r.evacVol);
+  if(count > EVAC_VOLUME_LIMIAR){ vol += count; count = 0; }
+  return {count, vol, presente: count > 0 || vol > 0};
+}
+function evacText(r){
+  const e = evacInfo(r);
+  if(!e.presente) return "Não";
+  const parts = [];
+  if(e.count) parts.push(`${e.count} ${e.count === 1 ? "episódio" : "episódios"}`);
+  if(e.vol) parts.push(`${e.vol} mL`);
+  return "Sim, " + parts.join(" + ");
+}
+
 function minMax(arr){
   if(!arr.length) return {min:"", max:""};
   return {min: Math.min(...arr), max: Math.max(...arr)};
@@ -657,15 +678,30 @@ function parseBalanco(lineObjects){
 
   const dorArr = getRowNumbers(lines, ["DOR SINAL VITAL","DOR -"]);
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
-  const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
-  const evacCount = evacArr.length ? evacArr[evacArr.length-1] : null;
+  // Evacuação: cada registro horário pode ser nº de episódios (valor pequeno)
+  // ou volume em mL (valor > EVAC_VOLUME_LIMIAR). Soma cada tipo separadamente.
+  const evacSeries = extractSeries(lineObjects, ["EVACUA","DEJE"]);
+  let evacCount = null, evacVol = null;
+  const addEvac = v => {
+    v = Math.abs(v);
+    if(v > EVAC_VOLUME_LIMIAR) evacVol = (evacVol||0) + v;
+    else evacCount = (evacCount||0) + v;
+  };
+  if(evacSeries.length){
+    evacSeries.forEach(p => addEvac(p.value));
+  } else {
+    const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
+    if(evacArr.length) addEvac(evacArr[evacArr.length-1]);
+  }
+  if(evacCount != null) evacCount = Math.round(evacCount);
+  if(evacVol != null) evacVol = Math.round(evacVol);
 
   const series = {
     fc: fcValid, fr: frValid, pam: pamValid, sat: satValid, temp: tempValid, glic: glicValid,
     nora: noraSeries, diureseHourly, ganhosHourly, perdasHourly
   };
 
-  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount,
+  return {nome, leito, atend, dataBal, ganhos, perdas, diurese, balanco, fc, fr, pam, sat, temp, glic, dorSim, evacCount, evacVol,
     drenos, hd, series, implausible};
 }
 
@@ -712,7 +748,7 @@ async function handleFile(file){
     statusEl.className = "err";
     await fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
       fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
-      glic:[],dorSim:"",evacCount:"",implausible:[]});
+      glic:[],dorSim:"",evacCount:"",evacVol:"",implausible:[]});
   }
 }
 
@@ -737,6 +773,7 @@ async function fillReview(d){
   document.getElementById("rGlic").value = (d.glic||[]).join(", ");
   document.getElementById("rDorSim").value = d.dorSim || "";
   document.getElementById("rEvacCount").value = (d.evacCount === null || d.evacCount === undefined) ? "" : d.evacCount;
+  document.getElementById("rEvacVol").value = (d.evacVol === null || d.evacVol === undefined) ? "" : d.evacVol;
 
   const implausibleBox = document.getElementById("implausibleWarning");
   const implausibleList = document.getElementById("implausibleList");
@@ -782,7 +819,8 @@ document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
     temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
     glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
     dorSim: document.getElementById("rDorSim").value,
-    evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value)
+    evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
+    evacVol: document.getElementById("rEvacVol").value === "" ? "" : parseFloat(document.getElementById("rEvacVol").value)
   };
   copyToClipboard(buildProntuarioText(r), e.target);
 });
@@ -794,17 +832,12 @@ document.getElementById("cancelBtn").addEventListener("click", ()=>{
 });
 
 // Texto para o prontuário — sempre em MAIÚSCULAS (padrão da UTI) e com unidades.
+// Ordem: vitais → dor/evacuação → diurese → drenos/HD → balanço (por último).
 function buildProntuarioText(r){
   const fmt = (o, unit) => (o.min==="" || o.max==="" || o.min==null || o.max==null) ? "" : `${o.min} - ${o.max} ${unit}`;
   const has = v => v !== "" && v != null;
   const lines = [
     r.horas ? `# Controles (${r.horas}h):` : `# Controles:`,
-    `Diurese: ${has(r.diurese) ? Math.abs(r.diurese) + " mL" : ""}`
-  ];
-  (r.drenos||[]).forEach(d => lines.push(`${d.label}: ${d.total} mL`));
-  if(has(r.hd)) lines.push(`Hemodi\u00e1lise (UF): ${r.hd} mL`);
-  lines.push(
-    `Balan\u00e7o h\u00eddrico: ${has(r.balanco) ? (r.balanco>=0?"+":"") + r.balanco + " mL" : ""}`,
     `Fc: ${fmt(r.fc, "bpm")}`,
     `Fr: ${fmt(r.fr, "irpm")}`,
     `Pam: ${fmt(r.pam, "mmHg")}`,
@@ -812,8 +845,12 @@ function buildProntuarioText(r){
     `Temp: ${fmt(r.temp, "\u00b0C")}`,
     `Glic capilar: ${(r.glic||[]).length ? r.glic.join(", ") + " mg/dL" : ""}`,
     `Dor: ${r.dorSim || ""}`,
-    `Evacua\u00e7\u00e3o: ${(r.evacCount === "" || r.evacCount === null || r.evacCount === undefined) ? "" : (r.evacCount>0 ? "Presente " + r.evacCount + "x" : "Ausente")}`
-  );
+    `Evacua\u00e7\u00e3o: ${evacText(r)}`,
+    `Diurese: ${has(r.diurese) ? Math.abs(r.diurese) + " mL" : ""}`
+  ];
+  (r.drenos||[]).forEach(d => lines.push(`${d.label}: ${d.total} mL`));
+  if(has(r.hd)) lines.push(`Hemodi\u00e1lise (UF): ${r.hd} mL`);
+  lines.push(`Balan\u00e7o h\u00eddrico: ${has(r.balanco) ? (r.balanco>=0?"+":"") + r.balanco + " mL" : ""}`);
   return lines.join("\n").toUpperCase();
 }
 
@@ -862,6 +899,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
     dorSim: document.getElementById("rDorSim").value,
     evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
+    evacVol: document.getElementById("rEvacVol").value === "" ? "" : parseFloat(document.getElementById("rEvacVol").value),
     series: lastParsedSeries,
     implausible: lastParsedImplausible,
     peso, noraMg, noraMl, vaso,
@@ -1258,7 +1296,7 @@ function buildPrintReport(p, history){
         <div><span class="k">Temp</span>${latest.temp.min}–${latest.temp.max}°C</div>
         <div><span class="k">Glicemias</span>${(latest.glic||[]).join(", ")||"—"}</div>
         <div><span class="k">Dor</span>${latest.dorSim||"—"}</div>
-        <div><span class="k">Evacuação</span>${(latest.evacCount==null||latest.evacCount==="")?"sem registro":(latest.evacCount>0?"Presente "+latest.evacCount+"x":"Ausente")}</div>
+        <div><span class="k">Evacuação</span>${evacText(latest)}</div>
       </div>
     </div>
 
@@ -1337,7 +1375,7 @@ async function renderPatients(){
           <div><span class="k">Temp</span><span class="v">${fmtRange(r.temp)} °C</span></div>
           <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(" · "):"—"}</span></div>
           <div><span class="k">Dor</span><span class="v">${r.dorSim || "—"}</span></div>
-          <div><span class="k">Evacuação</span><span class="v">${(r.evacCount==="" || r.evacCount===null || r.evacCount===undefined) ? "sem registro" : (r.evacCount>0 ? "Presente " + r.evacCount + "x" : "Ausente")}</span></div>
+          <div><span class="k">Evacuação</span><span class="v">${evacText(r)}</span></div>
         </div>
       `;
       recDiv.appendChild(rec);
