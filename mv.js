@@ -203,8 +203,28 @@
     return;
   }
 
+  // Lista todos os quadros (iframe/frame/embed/object), inclusive de outra
+  // origem, para descobrir onde a tela do MV realmente roda.
+  function frameReport(){
+    var out = [];
+    function walk(win, depth){
+      var doc;
+      try{ doc = win.document; }catch(e){ return; }
+      var els = doc.querySelectorAll("iframe,frame,embed,object");
+      for(var i = 0; i < els.length && out.length < 12; i++){
+        var el = els[i], src = el.src || el.data || el.getAttribute("src") || "(sem src)";
+        var acc = "outra origem";
+        try{ if(el.contentWindow){ void el.contentWindow.document.body; acc = "mesma origem"; } }catch(e){}
+        out.push(new Array(depth+1).join("  ") + el.nodeName.toLowerCase() + " [" + acc + "] " + String(src).slice(0,90));
+        try{ if(el.contentWindow && acc === "mesma origem") walk(el.contentWindow, depth+1); }catch(e){}
+      }
+    }
+    walk(top_, 0);
+    return out.length ? out.join("\n") : "(nenhum quadro na p\u00e1gina)";
+  }
+
   if(top_.__balancoUTIArmed){
-    alert(TAG + "Captura j\u00e1 est\u00e1 ARMADA nesta tela do MV. Abra o balan\u00e7o normalmente.\n\nDiagn\u00f3stico (" + (top_.__balancoUTIn || 0) + " janela/quadros monitorados; \u00faltimos eventos):\n" + (log.length ? log.slice(-14).join("\n") : "nada registrado"));
+    alert(TAG + "Captura j\u00e1 est\u00e1 ARMADA nesta tela do MV. Abra o balan\u00e7o normalmente.\n\nDiagn\u00f3stico (" + (top_.__balancoUTIn || 0) + " janela/quadros monitorados; \u00faltimos eventos):\n" + (log.length ? log.slice(-12).join("\n") : "nada registrado") + "\n\nQuadros da p\u00e1gina:\n" + frameReport() + "\nEndere\u00e7o: " + location.href.slice(0,100));
     hookAll(top_);
     return;
   }
