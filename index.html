@@ -176,9 +176,48 @@
   .trend-grid{ display:flex; gap:22px; flex-wrap:wrap; }
   .mini-chart .mini-label{ font-size:12px; color:var(--muted); margin-bottom:3px; }
 
-  .exam-table td, .exam-table th{ padding:3px 10px !important; }
   .exam-table td.crit{ color:var(--crit); font-weight:700; }
   .exam-table td.warn{ color:var(--warn); font-weight:700; }
+
+  /* ---- card do paciente (compacto) ---- */
+  .pt{ background:var(--surface); border:1px solid var(--rule); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  .pt-head{ display:flex; align-items:center; gap:18px; flex-wrap:wrap; padding-bottom:10px; border-bottom:1px solid var(--rule); margin-bottom:10px; }
+  .pt-head .leito{ font-size:24px; }
+  .pt-id{ min-width:200px; flex:1; }
+  .pt-id .name{ font-weight:700; font-size:15px; }
+  .pt-id .meta{ color:var(--muted); font-size:12px; }
+  .kpi small{ display:block; font-size:11px; color:var(--muted); }
+  .kpi b{ font-size:16px; }
+  .pt-act{ margin-left:auto; }
+  .pt-body{ display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:18px; }
+  .pt-col{ min-width:0; }
+  .col-head{ display:flex; justify-content:space-between; align-items:center; font-weight:700; margin-bottom:6px; }
+  .col-empty{ color:var(--muted); font-size:13px; padding:8px 0; }
+  .rec-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .rec-date{ font-weight:700; }
+  .tiles{ display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:6px; margin:6px 0 8px; }
+  .tile{ background:var(--panel2); border-radius:6px; padding:5px 8px 6px; border-left:3px solid var(--rule); min-width:0; }
+  .tile .tl{ font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .tv{ font-weight:700; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .tv span{ font-weight:400; font-size:11px; color:var(--muted); }
+  .tile svg{ margin-top:3px; }
+  .tile.fluid{ border-color:var(--soro); } .tile.pam{ border-color:var(--ch-pam); } .tile.fc{ border-color:var(--ch-fc); }
+  .tile.sat{ border-color:var(--ch-sat); } .tile.temp{ border-color:var(--ch-temp); } .tile.glic{ border-color:var(--ch-diu); }
+  .hint{ font-size:12px; color:var(--muted); margin-top:4px; }
+  table.exam-table{ border-collapse:collapse; font-size:12.5px; width:100%; }
+  table.exam-table th{ font-weight:600; color:var(--muted); text-align:right; padding:2px 6px; }
+  table.exam-table td{ text-align:right; padding:2px 6px; border-top:1px solid var(--rule); }
+  table.exam-table td.k{ text-align:left; font-weight:700; }
+  table.exam-table td.nd{ color:var(--muted); text-align:center; }
+  details.mini{ margin-top:8px; font-size:13px; }
+  details.mini > summary{ cursor:pointer; color:var(--muted); }
+  details.older .record{ border-top:1px solid var(--rule); padding:8px 0 0; margin-top:8px; }
+  .ex-txt{ margin-top:8px; }
+  .ex-txt pre.copia{ margin:4px 0 0; font-size:12px; padding:8px 10px; }
+  .trend-section{ margin:8px 0 0; padding-top:8px; }
+  .pt-col .trend-section svg{ max-width:100%; height:auto; }
+  .trend-grid{ gap:14px; }
+  @media (max-width:900px){ .pt-body{ grid-template-columns:1fr; } }
 
   /* ---- fim da página ---- */
   .shift{ border-top:2px solid var(--ink); padding-top:16px; }
@@ -1057,25 +1096,40 @@ function examAlertChips(alerts){
 }
 
 // Tabela de comparação: linhas = exames, colunas = dias (últimos 8).
-function buildExamTable(entries){
+// Tabela da tela: exames principais (mesmos da impressão) + qualquer outro alterado;
+// o restante fica em "ver todos".
+function buildExamTable(entries, opts){
+  opts = opts || {};
+  if(!opts.full){
+    const series = examSeries(entries);
+    const all = EXAM_KEY_ORDER.filter(k=>series[k]).concat(Object.keys(series).filter(k=>!EXAM_KEY_ORDER.includes(k) && !/^GASO/.test(k)));
+    const main = all.filter(k => UNIT_EX_KEYS.includes(k) || series[k].some(x => examLevel(k, x.num)));
+    const rest = all.filter(k => !main.includes(k));
+    return buildExamTableKeys(entries, main)
+      + (rest.length ? `<details class="mini"><summary>Ver todos os exames (+${rest.length}: ${rest.join(", ")})</summary>${buildExamTableKeys(entries, all)}</details>` : "")
+      + `<div class="hint">Itálico: anterior informado no laudo. Âmbar: alterado. Vermelho: crítico.</div>`;
+  }
+  return buildExamTableKeys(entries, null);
+}
+function buildExamTableKeys(entries, onlyKeys){
   const series = examSeries(entries);
-  const keys = EXAM_KEY_ORDER.filter(k=>series[k]).concat(Object.keys(series).filter(k=>!EXAM_KEY_ORDER.includes(k) && !/^GASO/.test(k)));
+  let keys = EXAM_KEY_ORDER.filter(k=>series[k]).concat(Object.keys(series).filter(k=>!EXAM_KEY_ORDER.includes(k) && !/^GASO/.test(k)));
+  if(onlyKeys) keys = keys.filter(k => onlyKeys.includes(k));
   if(!keys.length) return "";
-  const days = [...new Set([].concat(...keys.map(k=>series[k].map(x=>x.date))))].sort((a,b)=>coletaKey(a).localeCompare(coletaKey(b))).slice(-8);
+  const days = [...new Set([].concat(...keys.map(k=>series[k].map(x=>x.date))))].sort((a,b)=>coletaKey(a).localeCompare(coletaKey(b))).slice(-5);
   const cell = (k, d) => {
     const v = (series[k]||[]).find(x=>x.date === d);
-    if(!v) return `<td style="color:var(--muted); text-align:center;">·</td>`;
+    if(!v) return `<td class="nd">·</td>`;
     const lvl = examLevel(k, v.num);
     const color = lvl === "crit" ? "color:var(--crit); font-weight:700;" : lvl === "warn" ? "color:var(--warn); font-weight:700;" : "";
     const lab = v.src === "lab" ? "font-style:italic; opacity:.75;" : "";
-    return `<td style="text-align:right; padding:2px 8px; ${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
+    return `<td style="${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
   };
-  return `<div style="overflow-x:auto; margin-top:8px;">
-    <table class="exam-table" style="border-collapse:collapse; font-size:13px;">
-      <tr><th style="text-align:left; padding:2px 8px;"></th>${days.map(d=>`<th style="padding:2px 8px; text-align:right;">${d.slice(0,5)}</th>`).join("")}</tr>
-      ${keys.map(k=>`<tr style="border-top:1px solid var(--line);"><td style="padding:2px 8px; font-weight:600;">${k}</td>${days.map(d=>cell(k,d)).join("")}</tr>`).join("")}
+  return `<div style="overflow-x:auto;">
+    <table class="exam-table">
+      <tr><th></th>${days.map(d=>`<th>${d.slice(0,5)}</th>`).join("")}</tr>
+      ${keys.map(k=>`<tr><td class="k">${k}</td>${days.map(d=>cell(k,d)).join("")}</tr>`).join("")}
     </table>
-    <div style="font-size:13px; color:var(--muted); margin-top:4px;">Em itálico, resultados anteriores informados no laudo. Âmbar indica alterado; vermelho, crítico.</div>
   </div>`;
 }
 
@@ -1779,7 +1833,7 @@ function sparklineSVG(values, opts={}){
   const color = opts.color || "#3C8DD0";
   const pts = values.map((v,i)=>({v, i})).filter(o => o.v !== null && o.v !== undefined && !isNaN(o.v));
   if(pts.length === 0){
-    return `<div style="font-size:11px; color:var(--muted); width:${w}px;">sem dados suficientes</div>`;
+    return opts.compact ? `<div style="height:${h}px;"></div>` : `<div style="font-size:11px; color:var(--muted); width:${w}px;">sem dados suficientes</div>`;
   }
   const vs = pts.map(o=>o.v);
   let min = Math.min(...vs), max = Math.max(...vs);
@@ -1796,6 +1850,8 @@ function sparklineSVG(values, opts={}){
     circles += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="${color}"></circle>`;
   });
   const lastVal = vs[vs.length-1];
+  if(opts.compact) return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block; width:100%; height:${h}px; overflow:visible;">
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"></path></svg>`;
   return `<svg width="${w}" height="${h}" style="overflow:visible; display:block;">
     <path d="${path}" fill="none" stroke="${color}" stroke-width="2"></path>
     ${circles}
@@ -1803,10 +1859,33 @@ function sparklineSVG(values, opts={}){
   </svg>`;
 }
 
+// Blocos do plantão: valor e, logo abaixo, a curva do dia daquele parâmetro.
+function buildRecordTiles(r){
+  const s = r.series || {};
+  const arr = k => seriesToHourArray(s[k]);
+  const spark = (k, color) => (s[k]||[]).length ? sparklineSVG(arr(k), {color, width:120, height:26, compact:true}) : "";
+  const rng = (o, u) => (o && o.min !== "" && o.min != null) ? `${o.min}–${o.max}<span> ${u}</span>` : "—";
+  const t = (cls, label, val, chart) => `<div class="tile ${cls}"><div class="tl">${label}</div><div class="tv">${val}</div>${chart || ""}</div>`;
+  const tiles = [
+    t("fluid", "Balanço", `<b class="${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco}</b><span> mL</span>`),
+    t("fluid", "Diurese" + (r.horas ? ` (${r.horas}h)` : ""), `${Math.abs(r.diurese)}<span> mL</span>`)
+  ];
+  (r.drenos||[]).forEach(d=> tiles.push(t("fluid", d.label, `${d.total}<span> mL</span>`)));
+  if(r.hd !== "" && r.hd != null) tiles.push(t("fluid", "Hemodiálise", `${r.hd}<span> mL</span>`));
+  tiles.push(
+    t("pam", "PAM", rng(r.pam,"mmHg"), spark("pam","#E0564A")),
+    t("fc", "FC", rng(r.fc,"bpm"), spark("fc","#3BA776")),
+    t("sat", "SatO2", rng(r.sat,"%"), spark("sat","#23A3BF")),
+    t("temp", "Temp", rng(r.temp,"°C"), spark("temp","#D08A1E")),
+    t("", "FR", rng(r.fr,"irpm"), spark("fr","#8A9AA5")),
+    t("glic", "Glicemias", (r.glic||[]).length ? r.glic.join(", ") : "—", spark("glic","#8C7FD0")),
+    t("", "Dor / Evacuação", `${r.dorSim || "—"} / ${evacText(r)}`)
+  );
+  return `<div class="tiles">${tiles.join("")}</div>`;
+}
+
 function buildTrendSection(history){
-  if(history.length < 2){
-    return `<div class="trend-section"><div class="trend-title">Evolução entre plantões</div><div style="font-size:12px; color:var(--muted);">Envie mais plantões deste paciente para ver a evolução.</div></div>`;
-  }
+  if(history.length < 2) return "";
   const sorted = history.slice().sort((a,b)=>{
     const da = parseDatePtBr(a.dataBal), db = parseDatePtBr(b.dataBal);
     if(!da || !db) return 0;
@@ -1823,11 +1902,11 @@ function buildTrendSection(history){
     <div class="trend-section">
       <div class="trend-title">Evolução entre plantões (${labels[0]} → ${labels[labels.length-1]})</div>
       <div class="trend-grid">
-        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#3C8DD0"})}</div>
-        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#E0564A"})}</div>
-        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#23A3BF"})}</div>
-        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#3BA776"})}</div>
-        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#D08A1E"})}</div>
+        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#3C8DD0",width:120,height:34})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#E0564A",width:120,height:34})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#23A3BF",width:120,height:34})}</div>
+        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#3BA776",width:120,height:34})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#D08A1E",width:120,height:34})}</div>
       </div>
     </div>
   `;
@@ -1885,8 +1964,8 @@ function buildVasoSummary(record){
 function buildDualAxisSVG(record){
   const vaso = record.vaso;
   const pamSeries = (record.series && record.series.pam) || [];
-  const w = 640, h = 230;
-  const padL = 46, padR = 54, padT = 16, padB = 26;
+  const w = 640, h = 150;
+  const padL = 40, padR = 50, padT = 12, padB = 22;
   const plotW = w - padL - padR, plotH = h - padT - padB;
   const xOf = idx => padL + (idx/23) * plotW;
 
@@ -1945,7 +2024,7 @@ function buildDualAxisSVG(record){
     xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#8A9AA5" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
   }
 
-  return `<svg width="${w}" height="${h}" style="max-width:100%;">
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="xMinYMin meet" style="max-width:100%; height:auto; display:block;">
     ${bands}
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#7F8F99" stroke-opacity="0.45"></line>
     <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#7F8F99" stroke-opacity="0.45"></line>
@@ -1963,14 +2042,12 @@ function buildDualAxisSVG(record){
 }
 
 function buildVasoSection(record){
-  if(!record.peso){
-    return `<div class="trend-section"><div class="trend-title">Análise Clínica Avançada</div><div style="font-size:12px; color:var(--muted);">Informe o peso do paciente ao salvar para habilitar ganho ponderal, débito urinário relativo e inércia volêmica.</div></div>`;
-  }
+  if(!record.peso) return "";
   if(!record.vaso) return "";
   const hasNora = recordHasNora(record);
   return `
     <div class="trend-section">
-      <div class="trend-title">Análise Clínica Avançada</div>
+      <div class="trend-title">Noradrenalina, ganho ponderal e inércia volêmica</div>
       ${buildVasoSummary(record)}
       ${hasNora ? `
         <div style="font-size:10px; color:var(--muted); margin-bottom:6px;">
@@ -2067,23 +2144,22 @@ function buildPrintReport(p, history){
 
 // Exames salvos do paciente: o mais recente aberto, os anteriores recolhidos.
 function buildExamSection(pid, exams){
-  if(!exams || !exams.length) return "";
+  if(!exams || !exams.length) return `<div class="col-empty">Sem exames salvos. Solte o PDF do laboratório para comparar os dias aqui.</div>`;
   const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
-  const row = (e, i, open) => `
-    <details ${open ? "open" : ""} style="margin:4px 0;">
-      <summary style="cursor:pointer; font-size:14px;"><b>Coleta ${esc(e.coleta || "")}</b>
-        <button class="del-btn copy-exam" data-id="${pid}" data-idx="${i}" style="margin-left:8px;">Copiar</button>
-        <button class="quiet danger del-btn del-exam" data-id="${pid}" data-idx="${i}">Excluir</button>
-      </summary>
-      <pre class="copia" style="margin-top:6px;">${esc(e.text)}</pre>
-    </details>`;
   const n = exams.length;
-  return `<div class="record"><div class="rec-head"><div class="rec-date">Exames laboratoriais (${n})</div></div>
+  const row = (e, i) => `<div class="ex-txt">
+      <div class="actions"><b>Coleta ${esc(e.coleta || "")}</b>
+        <button class="del-btn copy-exam" data-id="${pid}" data-idx="${i}">Copiar</button>
+        <button class="quiet danger del-btn del-exam" data-id="${pid}" data-idx="${i}">Excluir</button></div>
+      <pre class="copia">${esc(e.text)}</pre></div>`;
+  return `
+    <div class="col-head"><span>Exames</span>
+      <button class="del-btn copy-exam" data-id="${pid}" data-idx="${n-1}">Copiar última coleta</button></div>
     ${examAlertChips(examAlerts(exams))}
     ${buildExamTable(exams)}
-    ${row(exams[n-1], n-1, true)}
-    ${exams.slice(0, n-1).map((e,i)=>({e,i})).reverse().map(({e,i})=>row(e,i,false)).join("")}
-  </div>`;
+    <details class="mini"><summary>Textos das coletas (${n})</summary>
+      ${exams.map((e,i)=>({e,i})).reverse().map(({e,i})=>row(e,i)).join("")}
+    </details>`;
 }
 
 async function renderPatients(){
@@ -2110,67 +2186,45 @@ async function renderPatients(){
     const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
 
     const block = document.createElement("div");
-    block.className = "card patient-block";
+    block.className = "pt";
+    const sortedIdx = history.map((r,i)=>i);
+    const latestIdx = history.length - 1;
+    const latest = history[latestIdx];
+    const recHead = (r, realIdx) => `
+      <div class="rec-head"><span class="rec-date">Plantão ${r.dataBal}</span>
+        <span class="actions"><button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar</button>
+        <button class="quiet danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button></span></div>`;
+    const recAlerts = r => { const al = getAlerts(r); return (al.length ? `<div>${al.map(a=>`<span class="alert-chip alert-${a.level}">${a.text}</span>`).join('')}</div>` : "")
+      + ((r.implausible && r.implausible.length) ? `<div class="hint">${r.implausible.length} valor(es) impossível(is) ignorado(s) (provável erro de digitação no MV).</div>` : ""); };
     block.innerHTML = `
-      <div class="patient-head">
-        <div class="who" style="margin:0;">
-          <div class="leito"><small>Leito</small>${p.leito || "—"}</div>
-          <div>
-            <div class="name">${p.nome}</div>
-            <div class="meta">${p.atend ? "Atendimento " + p.atend + ", " : ""}código no log ${p.cod || "—"}</div>
-            ${staleHtml}
-          </div>
+      <div class="pt-head">
+        <div class="leito"><small>Leito</small>${p.leito || "—"}</div>
+        <div class="pt-id">
+          <div class="name">${p.nome}</div>
+          <div class="meta">${p.atend ? "Atend. " + p.atend + ", " : ""}código ${p.cod || "—"}</div>
         </div>
-        <div class="actions">
+        ${latest ? `<div class="kpi"><small>Último balanço</small><b class="${latest.balanco<0?'neg':'pos'}">${latest.balanco>=0?'+':''}${latest.balanco} mL</b></div>
+        <div class="kpi"><small>Acumulado (${history.length})</small><b class="${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</b></div>
+        <div class="kpi"><small>Diurese acumulada</small><b>${totalDiurese.toFixed(0)} mL</b></div>` : ""}
+        <div class="actions pt-act">
           ${history.length ? `<button class="quiet print-patient" data-id="${p.id}">Imprimir</button>` : ""}
           <button class="alta-patient" data-id="${p.id}">Alta</button>
           <button class="quiet danger del-patient" data-id="${p.id}">Excluir</button>
         </div>
       </div>
-      <div class="cumulative" style="${history.length ? "" : "display:none;"}">
-        <div class="stat"><div class="label">Diurese acumulada</div><div class="value">${totalDiurese.toFixed(0)} mL</div></div>
-        <div class="stat"><div class="label">Balanço acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
-        <div class="stat"><div class="label">Balanços salvos</div><div class="value">${history.length}</div></div>
+      ${staleHtml}
+      <div class="pt-body">
+        <div class="pt-col">
+          ${latest ? recHead(latest, latestIdx) + recAlerts(latest) + buildRecordTiles(latest)
+                   : `<div class="col-empty">Sem balanço salvo. Solte o PDF do balanço do MV.</div>`}
+          ${buildTrendSection(history)}
+        </div>
+        <div class="pt-col">${buildExamSection(p.id, exams)}${latest ? buildVasoSection(latest) : ""}</div>
       </div>
-      ${history.length ? buildTrendSection(history) : ""}
-      ${buildExamSection(p.id, exams)}
-      <div class="records"></div>
+      ${history.length > 1 ? `<details class="mini older"><summary>Plantões anteriores (${history.length-1})</summary>
+        ${history.slice(0,-1).map((r,i)=>({r,i})).reverse().map(({r,i})=>`<div class="record">${recHead(r,i)}${recAlerts(r)}${buildRecordTiles(r)}</div>`).join("")}
+      </details>` : ""}
     `;
-    const recDiv = block.querySelector(".records");
-    history.slice().reverse().forEach((r, revIdx)=>{
-      const realIdx = history.length - 1 - revIdx;
-      const alerts = getAlerts(r);
-      const rec = document.createElement("div");
-      rec.className = "record";
-      rec.innerHTML = `
-        <div class="rec-head">
-          <div class="rec-date">${r.dataBal}</div>
-          <div style="display:flex; gap:6px;">
-            <button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar</button>
-            <button class="quiet danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button>
-          </div>
-        </div>
-        ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">${a.text}</span>`).join('')}</div>` : ''}
-        ${(r.implausible && r.implausible.length) ? `<div style="font-size:13px; color:var(--muted); margin-bottom:6px;">${r.implausible.length} valor(es) impossível(is) ignorado(s) no cálculo (provável erro de digitação no MV).</div>` : ''}
-        ${buildIntradaySection(r)}
-        ${buildVasoSection(r)}
-        <div class="grid">
-          <div><span class="k">Diurese${r.horas ? ` (${r.horas}h)` : ""}</span><span class="v">${Math.abs(r.diurese)} mL</span></div>
-          ${(r.drenos||[]).map(d=>`<div><span class="k">${d.label}</span><span class="v">${d.total} mL</span></div>`).join("")}
-          ${(r.hd!=="" && r.hd!=null) ? `<div><span class="k">Hemodiálise (UF)</span><span class="v">${r.hd} mL</span></div>` : ""}
-          <div><span class="k">Balanço hídrico</span><span class="v ${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco} mL</span></div>
-          <div><span class="k">FC</span><span class="v">${fmtRange(r.fc)} bpm</span></div>
-          <div><span class="k">FR</span><span class="v">${fmtRange(r.fr)} irpm</span></div>
-          <div><span class="k">PAM</span><span class="v">${fmtRange(r.pam)} mmHg</span></div>
-          <div><span class="k">SatO2</span><span class="v">${fmtRange(r.sat)} %</span></div>
-          <div><span class="k">Temp</span><span class="v">${fmtRange(r.temp)} °C</span></div>
-          <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(", "):"—"}</span></div>
-          <div><span class="k">Dor</span><span class="v">${r.dorSim || "—"}</span></div>
-          <div><span class="k">Evacuação</span><span class="v">${evacText(r)}</span></div>
-        </div>
-      `;
-      recDiv.appendChild(rec);
-    });
     container.appendChild(block);
   }
 
