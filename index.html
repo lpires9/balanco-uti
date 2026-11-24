@@ -941,12 +941,29 @@ fileInput.addEventListener("change", e=>{
 
 // Vários PDFs de uma vez (seleção múltipla ou arrastar vários): o primeiro abre
 // para conferência e os demais entram na fila, na ordem em que vieram.
+// Lote: com mais de um PDF, cada um é lido e salvo direto (sem parar na
+// conferência) e no fim aparece um resumo. Um PDF sozinho abre a conferência.
+const batch = {on:false, total:0, ok:[], err:[]};
 function enqueueMany(fileList){
   const files = Array.from(fileList || []).filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
-  if(!files.length){ statusEl.textContent = "Nenhum PDF entre os arquivos escolhidos."; statusEl.className = "err"; return; }
-  files.forEach(f => enqueuePdf(f));
-  if(files.length > 1){ statusEl.textContent = `${files.length} PDFs recebidos. Confira e salve um por vez; os próximos abrem em seguida.`; statusEl.className = "ok"; }
   fileInput.value = "";
+  if(!files.length){ statusEl.textContent = "Nenhum PDF entre os arquivos escolhidos."; statusEl.className = "err"; return; }
+  if(files.length > 1 && !reviewBusy && reviewCard.style.display !== "block" && document.getElementById("examCard").style.display !== "block"){
+    batch.on = true; batch.total = files.length; batch.ok = []; batch.err = [];
+  }
+  files.forEach(f => enqueuePdf(f));
+}
+function batchProgress(){
+  statusEl.className = "";
+  statusEl.textContent = `Salvando ${batch.ok.length + batch.err.length + 1} de ${batch.total}…`;
+}
+function batchFinish(){
+  batch.on = false;
+  const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  statusEl.className = batch.err.length ? "err" : "ok";
+  statusEl.innerHTML = `<b>${batch.ok.length} de ${batch.total} PDF(s) salvos.</b>`
+    + (batch.ok.length ? `<br>${batch.ok.map(esc).join("<br>")}` : "")
+    + (batch.err.length ? `<br><br><b>Não lidos:</b><br>${batch.err.map(esc).join("<br>")}` : "");
 }
 
 // "Ocupado" desde o início da leitura até salvar/descartar: garante um PDF por vez.
@@ -1371,6 +1388,17 @@ async function showExamReview(ex){
     ? "Exames lidos. Confira abaixo, copie e salve."
     : "PDF de exames reconhecido, mas não encontrei resultados neste layout.";
   statusEl.className = ex.items.length ? "ok" : "err";
+  if(batch.on){
+    if(ex.items.length){
+      batch.ok.push(`${ex.nome || "sem nome"}: exames da coleta ${ex.coleta || "?"} (${ex.items.length} resultados)`);
+      batchProgress();
+      setTimeout(()=> document.getElementById("examSaveBtn").click(), 30);
+    } else {
+      batch.err.push(`${ex.nome || "PDF de exames"}: nenhum resultado reconhecido`);
+      setTimeout(()=> document.getElementById("examCancelBtn").click(), 30);
+    }
+    return;
+  }
   card.scrollIntoView({behavior:"smooth", block:"start"});
   updateQueueNote();
 }
@@ -1558,6 +1586,7 @@ function nextInQueue(){
   reviewBusy = false;
   updateQueueNote();
   if(pdfQueue.length){ const f = pdfQueue.shift(); reviewBusy = true; updateQueueNote(); handleFile(f); }
+  else if(batch.on) batchFinish();
 }
 
 let lastParsedSeries = null;
@@ -1587,6 +1616,7 @@ async function handleFile(file){
     lastParsedSeries = null;
     lastParsedImplausible = [];
     statusEl.textContent = "Não consegui ler este PDF (" + (err && err.message ? err.message : err) + "). Confira se é o balanço ou o laudo de exames do MV e tente de novo.";
+    if(batch.on) batch.err.push(`${file.name}: ${err && err.message ? err.message : err}`);
     statusEl.className = "err";
     reviewCard.style.display = "none";
     nextInQueue();
@@ -1638,6 +1668,13 @@ async function fillReview(d){
   document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
   renderReviewSummary();
   updateQueueNote();
+  if(batch.on){
+    const r = currentReviewRecord();
+    batch.ok.push(`Leito ${r.leito || "—"}, ${r.nome || "sem nome"}: balanço de ${r.dataBal || "?"}${(d.implausible||[]).length ? " (valores impossíveis ignorados)" : ""}`);
+    batchProgress();
+    setTimeout(()=> document.getElementById("saveBtn").click(), 30);
+    return;
+  }
   reviewCard.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
