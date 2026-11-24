@@ -219,6 +219,12 @@
   .trend-grid{ gap:14px; }
   @media (max-width:900px){ .pt-body{ grid-template-columns:1fr; } }
 
+  /* ---- barra de gravação ---- */
+  .grav{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:13px; padding:8px 12px; border-radius:8px; margin:-8px 0 16px; border:1px solid; }
+  .grav.on{ color:var(--ok); border-color:var(--rule); }
+  .grav.off{ color:var(--warn); border-color:var(--warn); background:rgba(227,165,72,.10); }
+  .grav button{ margin-left:auto; }
+
   /* ---- fim da página ---- */
   .shift{ border-top:2px solid var(--ink); padding-top:16px; }
   details.avancado{ margin-top:18px; border-top:1px solid var(--rule); padding-top:12px; font-size:14px; }
@@ -293,6 +299,11 @@
   </div>
   <div class="hoje">Plantão de<b id="hojeData"></b><button class="quiet theme-btn" id="themeBtn"></button></div>
 </header>
+
+<div id="gravBar" class="grav off" role="status">
+  <span id="gravText">Verificando gravação…</span>
+  <button id="gravBtn" class="primary" style="display:none;"></button>
+</div>
 
 <section class="card">
   <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Escolher PDF do balanço ou dos exames">
@@ -381,6 +392,17 @@
         <label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" id="watchDelete" checked> Apagar o PDF da pasta depois de ler</label>
       </div>
       <div id="watchStatus" style="margin-top:8px; color:var(--muted);"></div>
+    </div>
+
+    <div class="box">
+      <h3>Cópia de segurança manual</h3>
+      <p style="margin:0 0 10px; color:var(--muted);">Para quando a gravação em pasta não estiver disponível: baixe um arquivo com todos os dados e restaure depois. Restaurar junta com o que já existe, sem apagar nada.</p>
+      <div class="actions">
+        <button id="bkDownloadBtn">Baixar cópia (.json)</button>
+        <button id="bkRestoreBtn">Restaurar de arquivo</button>
+        <input type="file" id="bkRestoreInput" accept=".json,application/json" style="display:none;">
+        <button class="quiet" id="gravTrocarBtn">Trocar pasta de gravação</button>
+      </div>
     </div>
 
     <div class="box">
@@ -1388,7 +1410,8 @@ let watchCanDelete = false, watchDeleted = 0, watchDeleteErr = "";
 // Chromium 86 aceita {mode:"readwrite"}; {writable:true} cobre a variante antiga.
 const RW = {mode:"readwrite", writable:true};
 
-function idbHandle(op, value){
+function idbHandle(op, value, key){
+  key = key || "dir";
   return new Promise((resolve)=>{
     try{
       const req = indexedDB.open("balanco_uti_fs", 1);
@@ -1398,7 +1421,7 @@ function idbHandle(op, value){
         try{
           const tx = req.result.transaction("h", op === "get" ? "readonly" : "readwrite");
           const st = tx.objectStore("h");
-          const r = op === "get" ? st.get("dir") : st.put(value, "dir");
+          const r = op === "get" ? st.get(key) : st.put(value, key);
           r.onsuccess = ()=> resolve(op === "get" ? r.result : true);
           r.onerror = ()=> resolve(null);
         }catch(e){ resolve(null); }
@@ -2544,6 +2567,184 @@ document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
     renderPatients();   // gráficos usam cores do tema
   });
 })();
+// ---------- Gravação em arquivo ----------
+// O Cent do hospital apaga os dados do navegador ao fechar. Tudo que o site guarda
+// (pacientes, balanços, exames, log) é gravado também num arquivo JSON numa pasta
+// escolhida pelo usuário, a cada alteração (verificação a cada 3 s), mais uma cópia
+// por dia. Ao reabrir, "Reconectar" lê o arquivo e JUNTA com o que houver no navegador.
+const GRAV_FILE = "balanco-uti-dados.json";
+const GRAV_SKIP = ["seeded"];   // chaves que não vão para o arquivo
+let gravDir = null, gravLast = "", gravTimer = null, gravLastTs = null, gravErr = "";
+
+function snapshotDados(){
+  const dados = {};
+  for(let i=0;i<localStorage.length;i++){
+    const k = localStorage.key(i);
+    if(k && k.indexOf(STORAGE_PREFIX) === 0){
+      const kk = k.slice(STORAGE_PREFIX.length);
+      if(!GRAV_SKIP.includes(kk)) dados[kk] = localStorage.getItem(k);
+    }
+  }
+  return dados;
+}
+function snapshotJSON(){
+  return JSON.stringify({app:"balanco-uti", versao:1, salvoEm:new Date().toISOString(), dados:snapshotDados()});
+}
+
+// Junta dados de um arquivo com os do navegador sem perder nada.
+function mesclarDados(fileDados){
+  const J = k => { try{ return JSON.parse(localStorage.getItem(STORAGE_PREFIX + k) || "null"); }catch(e){ return null; } };
+  const put = (k, v) => localStorage.setItem(STORAGE_PREFIX + k, typeof v === "string" ? v : JSON.stringify(v));
+  const uniq = (arr, keyFn) => { const m = new Map(); arr.forEach(x=>{ const k = keyFn(x); if(!m.has(k)) m.set(k, x); }); return [...m.values()]; };
+  let n = 0;
+  Object.keys(fileDados || {}).forEach(k=>{
+    let fv; try{ fv = JSON.parse(fileDados[k]); }catch(e){ fv = fileDados[k]; }
+    const lv = J(k);
+    if(lv == null){ put(k, fileDados[k]); n++; return; }
+    if(k === "index_pacientes" && Array.isArray(fv)){
+      const ids = new Set(lv.map(p=>p.id));
+      const merged = lv.concat(fv.filter(p=>!ids.has(p.id)));
+      if(merged.length !== lv.length){ put(k, merged); n++; }
+    } else if(/^hist_/.test(k) && Array.isArray(fv)){
+      const m = uniq(lv.concat(fv), r => (r.savedAt||"") + "|" + (r.dataBal||""));
+      m.sort((a,b)=> String(a.savedAt||"").localeCompare(String(b.savedAt||"")));
+      if(m.length !== lv.length){ put(k, m); n++; }
+    } else if(/^exam_/.test(k) && Array.isArray(fv)){
+      const m = uniq(lv.concat(fv), e => e.coleta || e.savedAt);
+      m.sort((a,b)=> coletaKey(a.coleta).localeCompare(coletaKey(b.coleta)));
+      if(m.length !== lv.length){ put(k, m); n++; }
+    } else if(k === LOG_KEY && Array.isArray(fv)){
+      const m = uniq(lv.concat(fv), e => e.ts + "|" + e.acao + "|" + (e.cod||""));
+      m.sort((a,b)=> String(a.ts).localeCompare(String(b.ts)));
+      if(m.length !== lv.length){ put(k, m); n++; }
+    }
+    // demais chaves (preferências): mantém a do navegador
+  });
+  return n;
+}
+
+async function gravarAgora(force){
+  if(!gravDir) return;
+  const dados = JSON.stringify(snapshotDados());
+  if(!force && dados === gravLast) return;
+  try{
+    const body = JSON.stringify({app:"balanco-uti", versao:1, salvoEm:new Date().toISOString(), dados:JSON.parse(dados)});
+    const write = async (name) => {
+      const fh = await gravDir.getFileHandle(name, {create:true});
+      const w = await fh.createWritable();
+      await w.write(body); await w.close();
+    };
+    await write(GRAV_FILE);
+    const d = new Date(), z = n => String(n).padStart(2,"0");
+    await write(`balanco-uti-copia-${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}.json`);
+    gravLast = dados; gravLastTs = new Date(); gravErr = "";
+  }catch(e){
+    gravErr = e.message || String(e);
+  }
+  atualizarGravBar();
+}
+
+function atualizarGravBar(){
+  const bar = document.getElementById("gravBar"), txt = document.getElementById("gravText"), btn = document.getElementById("gravBtn");
+  if(!("showDirectoryPicker" in window)){
+    bar.className = "grav off";
+    txt.textContent = "Este navegador não permite gravar em pasta. Use Configurações avançadas → Baixar cópia ao fim do plantão.";
+    btn.style.display = "none"; return;
+  }
+  if(gravDir && !gravErr){
+    bar.className = "grav on";
+    const hh = gravLastTs ? gravLastTs.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) : "—";
+    txt.textContent = `Gravando na pasta ${gravDir.name}. Última gravação às ${hh}.`;
+    btn.style.display = "none";
+  } else {
+    bar.className = "grav off";
+    txt.textContent = gravErr
+      ? `A gravação na pasta falhou (${gravErr}). Os dados deste plantão podem sumir ao fechar o Cent.`
+      : "A gravação em arquivo está desligada. O Cent apaga os dados ao fechar: conecte a pasta para gravar e recuperar o histórico.";
+    btn.style.display = "";
+  }
+}
+
+async function conectarGravacao(escolherNova){
+  try{
+    let dir = escolherNova ? null : await idbHandle("get", null, "gravDir");
+    if(dir && dir.requestPermission){
+      let perm = "denied";
+      try{ perm = await dir.requestPermission({mode:"readwrite", writable:true}); }catch(e){}
+      if(perm !== "granted") dir = null;
+    } else dir = null;
+    if(!dir){
+      alert("Escolha (ou crie) uma pasta para gravar os dados do Balanço UTI.\n\nSugestão: Documentos\\BalancoUTI. Use sempre a mesma pasta neste computador.");
+      dir = await window.showDirectoryPicker();
+      try{ await dir.requestPermission({mode:"readwrite", writable:true}); }catch(e){}
+      await idbHandle("put", dir, "gravDir");
+    }
+    gravDir = dir;
+    // Restaura/junta o que já estiver gravado no arquivo.
+    let restaurados = 0;
+    try{
+      const fh = await dir.getFileHandle(GRAV_FILE);
+      const f = await fh.getFile();
+      const obj = JSON.parse(await f.text());
+      if(obj && obj.dados) restaurados = mesclarDados(obj.dados);
+    }catch(e){ /* arquivo ainda não existe: primeira vez */ }
+    await gravarAgora(true);
+    clearInterval(gravTimer);
+    gravTimer = setInterval(()=> gravarAgora(false), 3000);
+    if(restaurados){
+      statusEl.textContent = "Histórico recuperado do arquivo de gravação.";
+      statusEl.className = "ok";
+      await logEvent("histórico recuperado do arquivo", null, null, `${restaurados} item(ns) restaurado(s)`);
+    }
+    renderPatients();
+  }catch(e){
+    if(e && e.name === "AbortError") return;
+    gravErr = e && e.message ? e.message : String(e);
+    atualizarGravBar();
+  }
+}
+
+(async function setupGravacao(){
+  const btn = document.getElementById("gravBtn");
+  btn.addEventListener("click", ()=> conectarGravacao(false));
+  document.getElementById("gravTrocarBtn").addEventListener("click", ()=> conectarGravacao(true));
+  if("showDirectoryPicker" in window){
+    const saved = await idbHandle("get", null, "gravDir");
+    btn.textContent = saved ? `Reconectar gravação (${saved.name})` : "Conectar pasta de gravação";
+    // Se o navegador ainda tiver a permissão (mesma sessão), reconecta sozinho.
+    if(saved && saved.queryPermission){
+      try{ if(await saved.queryPermission({mode:"readwrite", writable:true}) === "granted"){ await conectarGravacao(false); return; } }catch(e){}
+    }
+  }
+  atualizarGravBar();
+})();
+
+// Cópia manual (qualquer navegador)
+document.getElementById("bkDownloadBtn").addEventListener("click", ()=>{
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([snapshotJSON()], {type:"application/json"}));
+  const d = new Date(), z = n => String(n).padStart(2,"0");
+  a.download = `balanco-uti-copia-${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+document.getElementById("bkRestoreBtn").addEventListener("click", ()=> document.getElementById("bkRestoreInput").click());
+document.getElementById("bkRestoreInput").addEventListener("change", async (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    const obj = JSON.parse(await f.text());
+    if(!obj || obj.app !== "balanco-uti" || !obj.dados) throw new Error("arquivo não é uma cópia do Balanço UTI");
+    const n = mesclarDados(obj.dados);
+    statusEl.textContent = n ? `Cópia restaurada: ${n} item(ns) juntado(s) ao histórico.` : "Nada novo nesta cópia: o histórico já estava completo.";
+    statusEl.className = "ok";
+    await logEvent("cópia manual restaurada", null, null, `${n} item(ns)`);
+    renderPatients();
+  }catch(err){
+    statusEl.textContent = "Não consegui restaurar: " + (err.message || err);
+    statusEl.className = "err";
+  }
+  e.target.value = "";
+});
+
 document.getElementById("hojeData").textContent = new Date().toLocaleDateString("pt-BR", {weekday:"long", day:"numeric", month:"long"});
 migrarLogAntigo().then(renderPatients).then(()=>{
   const note = document.getElementById("persistNote");
