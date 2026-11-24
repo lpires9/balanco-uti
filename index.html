@@ -1376,17 +1376,23 @@ function buildProntuarioText(r){
   return lines.join("\n").toUpperCase();
 }
 
-async function copyToClipboard(text, btn){
-  try{
-    await navigator.clipboard.writeText(text);
-  }catch(e){
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-  }
+// Copia em dois formatos: texto simples com quebra de linha do Windows (CRLF)
+// e HTML com <br>. Só "\n" faz o LibreOffice (Windows) colar tudo numa linha.
+// Usa o evento "copy" (síncrono, dentro do clique), que funciona até no Cent/Chromium 86.
+function copyToClipboard(text, btn){
+  const plain = String(text).replace(/\r?\n/g, "\r\n");
+  const html = String(text).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").split(/\r?\n/).join("<br>");
+  let ok = false;
+  const onCopy = e => {
+    e.clipboardData.setData("text/plain", plain);
+    e.clipboardData.setData("text/html", "<span>" + html + "</span>");
+    e.preventDefault();
+    ok = true;
+  };
+  document.addEventListener("copy", onCopy);
+  try{ document.execCommand("copy"); }catch(e){}
+  document.removeEventListener("copy", onCopy);
+  if(!ok && navigator.clipboard) navigator.clipboard.writeText(plain).catch(()=>{});
   if(btn){
     const original = btn.textContent;
     btn.textContent = "Copiado!";
