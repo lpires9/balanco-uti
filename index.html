@@ -7,99 +7,175 @@
 <script src="vendor/polyfills.js"></script>
 <script src="vendor/pdf.min.js"></script>
 <style>
+  /* Atkinson Hyperlegible (Braille Institute, OFL): distingue 1/l/I, 0/O, 5/S —
+     escolhida para leitura rápida de números à beira-leito. Hospedada no site. */
+  @font-face{ font-family:"Atkinson"; font-weight:400; font-style:normal; font-display:swap;
+    src:url("vendor/fonts/atkinson-hyperlegible-latin-400-normal.woff2") format("woff2"); }
+  @font-face{ font-family:"Atkinson"; font-weight:700; font-style:normal; font-display:swap;
+    src:url("vendor/fonts/atkinson-hyperlegible-latin-700-normal.woff2") format("woff2"); }
+
   :root{
-    --bg:#0f1720;
-    --panel:#16212c;
-    --panel2:#1c2b38;
-    --line:#2a3b48;
-    --text:#e6edf3;
-    --muted:#8fa3b3;
-    --accent:#2fb4a3;
-    --accent2:#e0a458;
-    --danger:#d9694f;
-    --mono:'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --paper:#F3F6F7;   /* fundo */
+    --surface:#FFFFFF;
+    --ink:#17252E;     /* texto */
+    --muted:#5B6B75;
+    --rule:#D6DFE4;
+    --soro:#1565A3;    /* ação principal / balanço */
+    --crit:#B3261E;
+    --warn:#9A5B00;
+    --ok:#2F7D4F;
+    /* canais à moda do monitor multiparamétrico */
+    --ch-fc:#2E8B57; --ch-pam:#C0392B; --ch-sat:#0E7C9A; --ch-temp:#B26A00; --ch-nora:#7A4EAB; --ch-diu:#6B5CA5;
+
+    /* nomes antigos usados por estilos inline gerados no JS */
+    --bg:var(--paper); --panel:var(--surface); --panel2:#EEF3F5; --line:var(--rule); --text:var(--ink);
+    --accent:var(--soro); --accent2:var(--warn); --danger:var(--crit); --bg2:#EEF3F5;
+    --mono:"Atkinson", "Segoe UI", sans-serif;
   }
-  *{box-sizing:border-box;}
+  *{ box-sizing:border-box; }
+  html{ background:var(--paper); }
   body{
-    margin:0; background:var(--bg); color:var(--text);
-    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    padding:24px;
+    margin:0 auto; max-width:1120px; padding:28px 24px 48px;
+    color:var(--ink); font-family:"Atkinson","Segoe UI",Arial,sans-serif;
+    font-size:15px; line-height:1.45;
   }
-  h1{font-size:20px; margin:0 0 2px 0; font-weight:600;}
-  .sub{color:var(--muted); font-size:13px; margin-bottom:20px;}
-  .card{
-    background:var(--panel); border:1px solid var(--line);
-    border-radius:10px; padding:16px; margin-bottom:18px;
-  }
-  .card h2{
-    font-size:13px; text-transform:uppercase; letter-spacing:0.08em;
-    color:var(--accent); margin:0 0 12px 0; font-weight:700;
-  }
+  :focus-visible{ outline:3px solid #7FB3DA; outline-offset:2px; }
+
+  /* ---- cabeçalho ---- */
+  .top{ display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;
+        padding-bottom:14px; border-bottom:2px solid var(--ink); margin-bottom:22px; }
+  .top h1{ font-size:30px; line-height:1.05; margin:0; font-weight:700; letter-spacing:-.01em; }
+  .top p{ margin:4px 0 0; color:var(--muted); font-size:14px; max-width:60ch; }
+  .top .hoje{ font-size:14px; color:var(--muted); text-align:right; }
+  .top .hoje b{ display:block; color:var(--ink); font-size:19px; }
+
+  /* ---- seções ---- */
+  .card{ margin:0 0 26px; }
+  .card h2{ font-size:19px; font-weight:700; margin:0 0 10px; }
+  .card h2 small{ font-size:14px; font-weight:400; color:var(--muted); margin-left:8px; }
+
+  /* ---- área de envio ---- */
   .dropzone{
-    border:2px dashed var(--line); border-radius:10px; padding:28px;
-    text-align:center; color:var(--muted); cursor:pointer;
-    transition:border-color .15s, color .15s;
+    display:block;
+    background:var(--surface); border:2px dashed #9FB4C0; border-radius:10px;
+    padding:34px 20px; text-align:center; cursor:pointer; color:var(--muted);
   }
-  .dropzone.drag{ border-color:var(--accent); color:var(--accent); }
+  .dropzone strong{ display:block; font-size:19px; color:var(--ink); margin-bottom:4px; }
+  .dropzone.drag{ border-color:var(--soro); background:#EAF2F9; }
   .dropzone input{ display:none; }
-  #status{ font-size:13px; color:var(--muted); margin-top:10px; min-height:18px; }
-  #status.err{ color:var(--danger); }
-  #status.ok{ color:var(--accent); }
+  #status{ font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
+  #status.err{ color:var(--crit); }
+  #status.ok{ color:var(--ok); }
 
-  .review-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:12px; }
-  .field label{ display:block; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px; }
-  .field input{
-    width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:6px;
-    padding:7px 8px; color:var(--text); font-family:var(--mono); font-size:13px;
-  }
-  .minmax{ display:flex; gap:6px; }
-  .minmax input{ width:50%; }
-
+  /* ---- botões ---- */
   button{
-    background:var(--panel2); border:1px solid var(--line); color:var(--text);
-    padding:9px 16px; border-radius:6px; font-size:13px; cursor:pointer;
+    font:inherit; font-size:14px; background:var(--surface); color:var(--ink);
+    border:1px solid #AFC0CA; border-radius:6px; padding:8px 14px; cursor:pointer;
   }
-  button:hover{ border-color:var(--accent); color:var(--accent); }
-  button.primary{ background:var(--accent); border-color:var(--accent); color:#04211d; font-weight:600; }
-  button.primary:hover{ opacity:.9; color:#04211d; }
-  button.danger:hover{ border-color:var(--danger); color:var(--danger); }
+  button:hover{ border-color:var(--ink); }
+  button.primary{ background:var(--soro); border-color:var(--soro); color:#fff; font-weight:700; }
+  button.primary:hover{ background:#0F4F82; }
+  button.danger{ color:var(--crit); border-color:#E1B4B0; }
+  button.danger:hover{ border-color:var(--crit); }
+  button.quiet{ border-color:transparent; background:transparent; color:var(--muted); padding:6px 8px; }
+  button.quiet:hover{ color:var(--ink); border-color:var(--rule); }
+  .del-btn{ font-size:13px; padding:4px 10px; }
+  .actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
 
-  .patient-block{ border-left:3px solid var(--accent); }
-  .patient-head{ display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-  .patient-head .name{ font-size:16px; font-weight:600; }
-  .patient-head .meta{ font-size:12px; color:var(--muted); }
-  .cumulative{ display:flex; gap:18px; flex-wrap:wrap; margin-bottom:14px; }
-  .cumulative .stat{ background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
-  .cumulative .stat .label{ font-size:10px; color:var(--muted); text-transform:uppercase; }
-  .cumulative .stat .value{ font-family:var(--mono); font-size:15px; font-weight:600; }
+  /* ---- conferência (somente leitura) ---- */
+  .panel{ background:var(--surface); border:1px solid var(--rule); border-radius:10px; padding:20px 22px; }
+  .who{ display:flex; align-items:flex-start; gap:16px; margin-bottom:16px; }
+  .leito{ min-width:46px; }
+  .leito{ font-size:34px; font-weight:700; line-height:1; color:var(--ink); }
+  .leito small{ display:block; font-size:12px; font-weight:400; color:var(--muted); }
+  .who .nome{ font-size:19px; font-weight:700; }
+  .who .sub{ color:var(--muted); font-size:14px; }
 
-  .record{
-    background:var(--panel2); border:1px solid var(--line); border-radius:8px;
-    padding:12px 14px; margin-bottom:10px;
+  .bh{ display:grid; grid-template-columns:auto 1fr; gap:6px 26px; align-items:center;
+       padding:14px 0 16px; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); margin-bottom:16px; }
+  .bh .num{ font-size:44px; font-weight:700; line-height:1; letter-spacing:-.02em; }
+  .bh .num.pos{ color:var(--soro); }
+  .bh .num.neg{ color:var(--warn); }
+  .bh .cap{ font-size:13px; color:var(--muted); }
+  .flow{ display:grid; gap:6px; font-size:14px; }
+  .flow .row{ display:grid; grid-template-columns:70px 1fr 90px; align-items:center; gap:10px; }
+  .flow .bar{ height:10px; background:#E6EDF1; border-radius:5px; overflow:hidden; }
+  .flow .bar i{ display:block; height:100%; border-radius:5px; }
+  .flow .in i{ background:var(--soro); }
+  .flow .out i{ background:#8FA3AF; }
+  .flow .v{ text-align:right; font-weight:700; }
+
+  dl.vals{ display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:12px 20px; margin:0 0 16px; }
+  dl.vals div{ border-left:3px solid var(--rule); padding-left:10px; }
+  dl.vals dt{ font-size:13px; color:var(--muted); }
+  dl.vals dd{ margin:0; font-size:17px; font-weight:700; }
+  dl.vals dd span{ font-size:13px; font-weight:400; color:var(--muted); }
+  dl.vals .fc{ border-color:var(--ch-fc); } dl.vals .pam{ border-color:var(--ch-pam); }
+  dl.vals .sat{ border-color:var(--ch-sat); } dl.vals .temp{ border-color:var(--ch-temp); }
+  dl.vals .fluid{ border-color:var(--soro); }
+
+  pre.copia, textarea.copia{
+    display:block; width:100%; margin:0 0 14px; padding:12px 14px; border-radius:8px;
+    background:#F6F9FA; border:1px solid var(--rule); color:var(--ink);
+    font:14px/1.5 "Atkinson","Segoe UI",sans-serif; white-space:pre-wrap; resize:none;
   }
-  .record .rec-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-  .record .rec-date{ font-weight:600; font-size:13px; }
-  .record .grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; font-size:12px; }
-  .record .grid div span.k{ color:var(--muted); display:block; font-size:10px; text-transform:uppercase; }
-  .record .grid div span.v{ font-family:var(--mono); }
-  .neg{ color:var(--danger); }
-  .pos{ color:var(--accent); }
-  .del-btn{ font-size:11px; padding:4px 8px; }
-
-  #patients{ display:flex; flex-direction:column; gap:16px; }
-  footer{ color:var(--muted); font-size:11px; margin-top:10px; }
-
-  .alert-chip{
-    font-size:11px; padding:3px 9px; border-radius:12px; margin:0 6px 6px 0;
-    display:inline-block; border:1px solid; font-weight:500;
+  .copia-label{ font-size:13px; color:var(--muted); margin:0 0 4px; }
+  details.ajustes{ margin:0 0 16px; font-size:14px; }
+  details.ajustes summary{ cursor:pointer; color:var(--muted); }
+  .ajustes .row{ display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; }
+  .field label{ display:block; font-size:13px; color:var(--muted); margin-bottom:3px; }
+  .field input, .field select{
+    font:inherit; width:140px; background:var(--surface); border:1px solid #AFC0CA;
+    border-radius:6px; padding:6px 8px; color:var(--ink);
   }
-  .alert-warn{ background:rgba(217,105,79,0.12); color:var(--danger); border-color:var(--danger); }
-  .alert-info{ background:rgba(224,164,88,0.12); color:var(--accent2); border-color:var(--accent2); }
+  #reviewFields{ display:none; }   /* valores lidos do PDF: guardados, não editáveis */
 
-  .trend-section{ margin-top:8px; margin-bottom:14px; padding-top:10px; border-top:1px solid var(--line); }
-  .trend-title{ font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
-  .trend-grid{ display:flex; gap:20px; flex-wrap:wrap; }
-  .mini-chart .mini-label{ font-size:10px; color:var(--muted); margin-bottom:3px; }
+  /* ---- pacientes ---- */
+  #patients{ display:flex; flex-direction:column; }
+  .patient-block{ padding:18px 0 20px; border-top:2px solid var(--ink); margin:0; }
+  .patient-head{ display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+  .patient-head .name{ font-size:19px; font-weight:700; }
+  .patient-head .meta{ font-size:14px; color:var(--muted); }
+  .cumulative{ display:flex; gap:28px; flex-wrap:wrap; margin-bottom:14px; }
+  .cumulative .stat .label{ font-size:13px; color:var(--muted); }
+  .cumulative .stat .value{ font-size:22px; font-weight:700; }
+  .record{ border-top:1px solid var(--rule); padding:12px 0; }
+  .record .rec-head{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+  .record .rec-date{ font-weight:700; font-size:16px; }
+  .record .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px 18px; font-size:14px; }
+  .record .grid div span.k{ color:var(--muted); display:block; font-size:13px; }
+  .record .grid div span.v{ font-weight:700; }
+  .neg{ color:var(--warn); }
+  .pos{ color:var(--soro); }
+  .stale{ margin-top:6px; font-size:14px; color:var(--warn); }
+
+  .alert-chip{ display:inline-block; font-size:13px; padding:3px 10px; border-radius:14px; margin:0 6px 6px 0; border:1px solid; }
+  .alert-warn{ background:#FBEDEC; color:var(--crit); border-color:#E7B7B2; }
+  .alert-info{ background:#FBF3E6; color:var(--warn); border-color:#E6CDA4; }
+
+  .trend-section{ margin:6px 0 14px; padding-top:10px; border-top:1px solid var(--rule); }
+  .trend-title{ font-size:14px; color:var(--muted); margin-bottom:8px; }
+  .trend-grid{ display:flex; gap:22px; flex-wrap:wrap; }
+  .mini-chart .mini-label{ font-size:12px; color:var(--muted); margin-bottom:3px; }
+
+  .exam-table td, .exam-table th{ padding:3px 10px !important; }
+  .exam-table td.crit{ color:var(--crit); font-weight:700; }
+  .exam-table td.warn{ color:var(--warn); font-weight:700; }
+
+  /* ---- fim da página ---- */
+  .shift{ border-top:2px solid var(--ink); padding-top:16px; }
+  details.avancado{ margin-top:18px; border-top:1px solid var(--rule); padding-top:12px; font-size:14px; }
+  details.avancado > summary{ cursor:pointer; color:var(--muted); }
+  details.avancado .box{ margin-top:12px; padding:14px 16px; background:var(--surface); border:1px solid var(--rule); border-radius:8px; }
+  details.avancado h3{ font-size:15px; margin:0 0 8px; }
+  footer{ color:var(--muted); font-size:13px; margin-top:22px; }
+
+  @media (max-width:640px){
+    body{ padding:18px 14px 40px; }
+    .bh{ grid-template-columns:1fr; }
+    .top h1{ font-size:25px; }
+  }
+  @media (prefers-reduced-motion:reduce){ *{ transition:none !important; animation:none !important; } }
 
   #printArea{ display:none; }
   @media print {
@@ -139,116 +215,116 @@
 </head>
 <body>
 
-<h1>Controle Acumulado de Balanço — UTI</h1>
-<div class="sub">Envie o PDF do balanço ou dos exames a cada plantão. Os dados são extraídos automaticamente e somados ao histórico do paciente (por leito/atendimento).</div>
+<header class="top">
+  <div>
+    <h1>Balanço UTI</h1>
+    <p>Solte o PDF do balanço ou dos exames do MV. Os valores são lidos, organizados por paciente e prontos para copiar no prontuário.</p>
+  </div>
+  <div class="hoje">Plantão de<b id="hojeData"></b></div>
+</header>
 
-<div class="card">
-  <h2>Enviar PDF</h2>
-  <div class="dropzone" id="dropzone">
-    <div>Arraste o PDF aqui ou clique para selecionar</div>
+<section class="card">
+  <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Escolher PDF do balanço ou dos exames">
+    <strong>Solte o PDF aqui</strong>
+    ou clique para escolher o arquivo
     <input type="file" id="fileInput" accept="application/pdf">
   </div>
-  <div id="status"></div>
-  <div id="watchBox" style="display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:12px;">
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <button id="watchBtn">📁 Monitorar pasta de Downloads</button>
-      <label style="display:flex; gap:4px; align-items:center; white-space:nowrap;"><input type="checkbox" id="watchDelete" checked> apagar o PDF da pasta depois de ler</label>
-      <span id="watchStatus" style="color:var(--muted);">Escolha a pasta onde o navegador salva os PDFs. Depois, no PDF do MV, aperte <b>Ctrl+S</b> e <b>Enter</b>: o balanço entra aqui sozinho.</span>
+  <div id="status" role="status" aria-live="polite"></div>
+</section>
+
+<section class="card" id="examCard" style="display:none;">
+  <h2>Exames para conferir</h2>
+  <div class="panel">
+    <div id="examMeta" class="who"></div>
+    <div id="examAlerts"></div>
+    <p class="copia-label">Texto que vai para o prontuário (entre parênteses, o resultado anterior informado pelo laboratório)</p>
+    <textarea id="examText" class="copia" rows="7" readonly></textarea>
+    <div class="actions">
+      <button class="primary" id="examCopyBtn">Copiar para o prontuário</button>
+      <button id="examSaveBtn">Salvar no paciente</button>
+      <button class="quiet" id="examCancelBtn">Descartar</button>
     </div>
   </div>
-</div>
+</section>
 
-<div class="card" id="examCard" style="display:none;">
-  <h2>Exames — conferir</h2>
-  <div id="examMeta" style="font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
-  <div id="examAlerts"></div>
-  <textarea id="examText" rows="9" style="width:100%; font-family:ui-monospace,Consolas,monospace; font-size:12px; box-sizing:border-box;"></textarea>
-  <div style="font-size:11px; color:var(--muted); margin:4px 0 10px;">Entre parênteses: resultado anterior informado pelo laboratório. O texto pode ser editado antes de copiar.</div>
-  <div style="display:flex; gap:8px; flex-wrap:wrap;">
-    <button class="primary" id="examCopyBtn">Copiar p/ prontuário</button>
-    <button id="examSaveBtn">Salvar no paciente</button>
-    <button id="examCancelBtn">Cancelar</button>
-  </div>
-</div>
-
-<div class="card" id="reviewCard" style="display:none;">
-  <h2>Conferir antes de salvar</h2>
-  <div id="implausibleWarning" style="display:none; background:rgba(217,105,79,0.12); border:1px solid var(--danger); border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:12px;">
-    <div style="color:var(--danger); font-weight:600; margin-bottom:4px;">⚠ Valores fisiologicamente implausíveis foram excluídos do cálculo automático</div>
-    <div id="implausibleList" style="color:var(--text);"></div>
-    <div style="color:var(--muted); margin-top:4px;">Provavelmente erro de digitação no PDF original — confira a fonte. Esses valores NÃO entraram no min-máx, no gráfico nem nos alertas.</div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>Paciente</label><input id="rNome"></div>
-    <div class="field"><label>Leito</label><input id="rLeito"></div>
-    <div class="field"><label>Atendimento</label><input id="rAtend"></div>
-    <div class="field"><label>Data do balanço</label><input id="rData"></div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>Diurese total (mL)</label><input id="rDiurese" type="number"></div>
-    <div class="field"><label>Ganhos total (mL)</label><input id="rGanhos" type="number"></div>
-    <div class="field"><label>Perdas total (mL)</label><input id="rPerdas" type="number"></div>
-    <div class="field"><label>Balanço hídrico (mL)</label><input id="rBalanco" type="number"></div>
-  </div>
-  <div class="review-grid">
-    <div class="field" style="grid-column: span 2;"><label>Drenagens (nome: mL; separadas por ;)</label><input id="rDrenos" placeholder="ex: Dreno tórax D: 200; Dreno abdominal: 50"></div>
-    <div class="field"><label>Hemodiálise / UF (mL)</label><input id="rHd" type="number"></div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>Horas de controle (opcional)</label><input id="rHoras" type="number" min="1" max="24" step="1" placeholder="em branco = # CONTROLES:"></div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>FC min–max</label><div class="minmax"><input id="rFcMin" type="number"><input id="rFcMax" type="number"></div></div>
-    <div class="field"><label>FR min–max</label><div class="minmax"><input id="rFrMin" type="number"><input id="rFrMax" type="number"></div></div>
-    <div class="field"><label>PAM min–max</label><div class="minmax"><input id="rPamMin" type="number"><input id="rPamMax" type="number"></div></div>
-    <div class="field"><label>SatO2 min–max</label><div class="minmax"><input id="rSatMin" type="number"><input id="rSatMax" type="number"></div></div>
-    <div class="field"><label>Temp min–max</label><div class="minmax"><input id="rTempMin" type="number" step="0.1"><input id="rTempMax" type="number" step="0.1"></div></div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>Peso do paciente (kg)</label><input id="rPeso" type="number" step="0.1" placeholder="ex: 70"></div>
-    <div class="field"><label>Noradrenalina — mg total (ampolas)</label><input id="rNoraMg" type="number" step="0.1" placeholder="ex: 16"></div>
-    <div class="field"><label>Noradrenalina — mL total (diluição)</label><input id="rNoraMl" type="number" step="0.1" placeholder="ex: 250"></div>
-  </div>
-  <div class="review-grid">
-    <div class="field"><label>Glicemias (separadas por vírgula)</label><input id="rGlic"></div>
-    <div class="field"><label>Dor</label>
-      <select id="rDorSim" style="width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:7px 8px; color:var(--text); font-size:13px;">
-        <option value="">—</option>
-        <option value="Sim">Sim</option>
-        <option value="Não">Não</option>
-      </select>
+<section class="card" id="reviewCard" style="display:none;">
+  <h2>Balanço para conferir</h2>
+  <div class="panel">
+    <div id="implausibleWarning" style="display:none; background:#FBEDEC; border:1px solid #E7B7B2; border-radius:8px; padding:10px 12px; margin-bottom:14px; font-size:14px;">
+      <div style="color:var(--crit); font-weight:700; margin-bottom:4px;">Valores impossíveis foram ignorados</div>
+      <div id="implausibleList"></div>
+      <div style="color:var(--muted); margin-top:4px;">Provável erro de digitação no MV. Eles não entram no mínimo–máximo, no gráfico nem nos alertas.</div>
     </div>
-    <div class="field"><label>Evacuação (nº de episódios)</label><input id="rEvacCount" type="number" min="0" step="1"></div>
-    <div class="field"><label>Evacuação (volume mL)</label><input id="rEvacVol" type="number" min="0" step="1"></div>
+    <div id="reviewSummary"></div>
+    <details class="ajustes">
+      <summary>Ajustes opcionais: horas de controle e noradrenalina</summary>
+      <div class="row">
+        <div class="field"><label for="rHoras">Horas de controle</label><input id="rHoras" type="number" min="1" max="24" step="1" placeholder="em branco"></div>
+        <div class="field"><label for="rPeso">Peso (kg)</label><input id="rPeso" type="number" step="0.1" placeholder="70"></div>
+        <div class="field"><label for="rNoraMg">Nora: mg na solução</label><input id="rNoraMg" type="number" step="0.1" placeholder="16"></div>
+        <div class="field"><label for="rNoraMl">Nora: volume (mL)</label><input id="rNoraMl" type="number" step="0.1" placeholder="250"></div>
+      </div>
+    </details>
+    <p class="copia-label">Texto que vai para o prontuário</p>
+    <pre class="copia" id="reviewPreview"></pre>
+    <div class="actions">
+      <button class="primary" id="saveBtn">Salvar no histórico</button>
+      <button id="copyReviewBtn">Copiar para o prontuário</button>
+      <button class="quiet" id="cancelBtn">Descartar</button>
+    </div>
   </div>
-  <div style="display:flex; gap:10px; margin-top:6px;">
-    <button class="primary" id="saveBtn">Salvar no histórico</button>
-    <button id="copyReviewBtn">Copiar p/ prontuário</button>
-    <button id="cancelBtn">Cancelar</button>
+  <!-- valores lidos do PDF (não editáveis; usados para salvar/copiar) -->
+  <div id="reviewFields" aria-hidden="true">
+    <input id="rNome"><input id="rLeito"><input id="rAtend"><input id="rData">
+    <input id="rDiurese"><input id="rGanhos"><input id="rPerdas"><input id="rBalanco">
+    <input id="rDrenos"><input id="rHd">
+    <input id="rFcMin"><input id="rFcMax"><input id="rFrMin"><input id="rFrMax">
+    <input id="rPamMin"><input id="rPamMax"><input id="rSatMin"><input id="rSatMax">
+    <input id="rTempMin"><input id="rTempMax"><input id="rGlic">
+    <select id="rDorSim"><option value=""></option><option value="Sim">Sim</option><option value="Não">Não</option></select>
+    <input id="rEvacCount"><input id="rEvacVol">
   </div>
-</div>
+</section>
 
-<div class="card">
+<section class="card">
   <h2>Pacientes</h2>
   <div id="patients"></div>
-  <div id="emptyMsg" style="color:var(--muted); font-size:13px;">Nenhum registro salvo ainda.</div>
-</div>
+  <div id="emptyMsg" style="color:var(--muted);">Nenhum paciente ainda. Solte o primeiro PDF acima para começar.</div>
+</section>
 
-<div class="card" id="shiftCard">
+<section class="card shift" id="shiftCard">
   <h2>Plantão</h2>
-  <div style="display:flex; gap:8px; flex-wrap:wrap;">
-    <button id="printUnitBtn">🖨 Imprimir relatório da UTI</button>
-    <button id="logBtn">📋 Log da sessão</button>
-    <button class="danger" id="clearDayBtn" style="margin-left:auto;">🗑 Apagar controles do dia</button>
+  <div class="actions">
+    <button id="printUnitBtn">Imprimir relatório da UTI</button>
+    <button class="danger" id="clearDayBtn" style="margin-left:auto;">Apagar controles de hoje</button>
   </div>
-  <div id="logPanel" style="display:none; margin-top:12px;">
-    <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
-      <span style="font-size:12px; color:var(--muted);">Registro pseudonimizado (leito + código sorteado). O vínculo código ↔ paciente some na alta/exclusão. Não é apagado junto com os controles.</span>
-      <button id="logExportBtn" style="margin-left:auto;">Exportar CSV</button>
+
+  <details class="avancado">
+    <summary>Configurações avançadas</summary>
+
+    <div class="box" id="watchBox" style="display:none;">
+      <h3>Ler PDFs automaticamente da pasta Downloads</h3>
+      <p style="margin:0 0 10px; color:var(--muted);">Escolha a pasta onde o navegador salva os arquivos. Depois, no PDF do MV, use Ctrl+S e Enter: o balanço aparece aqui sozinho.</p>
+      <div class="actions">
+        <button id="watchBtn">Monitorar pasta de Downloads</button>
+        <label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" id="watchDelete" checked> Apagar o PDF da pasta depois de ler</label>
+      </div>
+      <div id="watchStatus" style="margin-top:8px; color:var(--muted);"></div>
     </div>
-    <div id="logList" style="max-height:320px; overflow:auto; font-size:11.5px; font-family:ui-monospace,Consolas,monospace;"></div>
-  </div>
-</div>
+
+    <div class="box">
+      <h3>Log do plantão</h3>
+      <p style="margin:0 0 10px; color:var(--muted);">Registro pseudonimizado: leito e código sorteado, sem nome nem atendimento. O vínculo do código com o paciente some na alta. Não é apagado com os controles.</p>
+      <div class="actions">
+        <button id="logBtn">Mostrar log</button>
+        <button id="logExportBtn">Exportar CSV</button>
+      </div>
+      <div id="logPanel" style="display:none; margin-top:10px;">
+        <div id="logList" style="max-height:320px; overflow:auto; font-size:13px;"></div>
+      </div>
+    </div>
+  </details>
+</section>
 
 <footer id="persistNote"></footer>
 
@@ -945,7 +1021,7 @@ function examAlerts(entries){
 
 function examAlertChips(alerts){
   if(!alerts.length) return "";
-  return `<div style="margin:6px 0;">${alerts.map(a=>`<span class="alert-chip alert-${a.level === "crit" ? "warn" : "info"}">${a.level === "crit" ? "⛔" : "⚠"} ${a.text}</span>`).join("")}</div>`;
+  return `<div style="margin:6px 0;">${alerts.map(a=>`<span class="alert-chip alert-${a.level === "crit" ? "warn" : "info"}">${a.level === "crit" ? "Crítico: " : ""}${a.text}</span>`).join("")}</div>`;
 }
 
 // Tabela de comparação: linhas = exames, colunas = dias (últimos 8).
@@ -958,16 +1034,16 @@ function buildExamTable(entries){
     const v = (series[k]||[]).find(x=>x.date === d);
     if(!v) return `<td style="color:var(--muted); text-align:center;">·</td>`;
     const lvl = examLevel(k, v.num);
-    const color = lvl === "crit" ? "color:#ff6b6b; font-weight:700;" : lvl === "warn" ? "color:#f0b429; font-weight:600;" : "";
+    const color = lvl === "crit" ? "color:var(--crit); font-weight:700;" : lvl === "warn" ? "color:var(--warn); font-weight:700;" : "";
     const lab = v.src === "lab" ? "font-style:italic; opacity:.75;" : "";
     return `<td style="text-align:right; padding:2px 8px; ${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
   };
   return `<div style="overflow-x:auto; margin-top:8px;">
-    <table style="border-collapse:collapse; font-size:12px; font-family:ui-monospace,Consolas,monospace;">
+    <table class="exam-table" style="border-collapse:collapse; font-size:14px;">
       <tr><th style="text-align:left; padding:2px 8px;"></th>${days.map(d=>`<th style="padding:2px 8px; text-align:right;">${d.slice(0,5)}</th>`).join("")}</tr>
       ${keys.map(k=>`<tr style="border-top:1px solid var(--line);"><td style="padding:2px 8px; font-weight:600;">${k}</td>${days.map(d=>cell(k,d)).join("")}</tr>`).join("")}
     </table>
-    <div style="font-size:10.5px; color:var(--muted); margin-top:4px;">Em itálico: resultado anterior informado no laudo (dia não salvo aqui). Amarelo = alterado · vermelho = crítico.</div>
+    <div style="font-size:13px; color:var(--muted); margin-top:4px;">Em itálico, resultados anteriores informados no laudo. Âmbar indica alterado; vermelho, crítico.</div>
   </div>`;
 }
 
@@ -1102,11 +1178,15 @@ async function showExamReview(ex){
   document.getElementById("examAlerts").innerHTML = examAlertChips(examAlerts(saved.concat([ex])));
   const card = document.getElementById("examCard");
   card.style.display = "block";
-  document.getElementById("examMeta").textContent =
-    `${ex.nome || "Paciente não identificado"}${ex.atend ? " · Atendimento " + ex.atend : ""} · Coleta ${ex.coleta || "?"} · ${ex.items.length} resultado(s) lido(s)`;
+  const escE = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const idxP = JSON.parse(await storeGet("index_pacientes") || "[]").find(x=>x.id===pid);
+  document.getElementById("examMeta").innerHTML = `
+    <div class="leito"><small>Leito</small>${escE(idxP && idxP.leito ? idxP.leito : "—")}</div>
+    <div><div class="nome">${escE(ex.nome || "Paciente não identificado")}</div>
+      <div class="sub">Coleta ${escE(ex.coleta || "?")}${ex.atend ? `, atendimento ${escE(ex.atend)}` : ""}, ${ex.items.length} resultados lidos</div></div>`;
   document.getElementById("examText").value = ex.items.length ? buildExamText(ex) : "";
   statusEl.textContent = ex.items.length
-    ? "Exames lidos. Confira o texto antes de copiar."
+    ? "Exames lidos. Confira abaixo, copie e salve."
     : "PDF de exames reconhecido, mas não encontrei resultados neste layout.";
   statusEl.className = ex.items.length ? "ok" : "err";
   card.scrollIntoView({behavior:"smooth", block:"start"});
@@ -1221,9 +1301,9 @@ async function scanWatchDir(initial){
     }
   }
   const delInfo = document.getElementById("watchDelete").checked
-    ? (watchDeleteErr ? ` · ⚠ não consegui apagar da pasta (${watchDeleteErr})` : ` · ${watchDeleted} apagado(s) da pasta`)
+    ? (watchDeleteErr ? `, mas não consegui apagar da pasta (${watchDeleteErr})` : `, ${watchDeleted} apagado(s) da pasta`)
     : "";
-  setWatchStatus(`🟢 Monitorando <b>${watchDir.name}</b> — ${watchCount} PDF(s) lido(s)${delInfo}. No PDF do MV: <b>Ctrl+S</b> → <b>Enter</b>.`);
+  setWatchStatus(`Monitorando a pasta <b>${watchDir.name}</b>: ${watchCount} PDF(s) lido(s)${delInfo}.`);
 }
 
 async function startWatch(dir){
@@ -1233,11 +1313,11 @@ async function startWatch(dir){
   await scanWatchDir(true);            // arquivos já existentes são ignorados
   clearInterval(watchTimer);
   watchTimer = setInterval(()=> scanWatchDir(false), WATCH_INTERVAL_MS);
-  document.getElementById("watchBtn").textContent = "⏹ Parar monitoramento";
+  document.getElementById("watchBtn").textContent = "Parar monitoramento";
 }
 function stopWatch(msg){
   clearInterval(watchTimer); watchTimer = null; watchDir = null;
-  document.getElementById("watchBtn").textContent = "📁 Monitorar pasta de Downloads";
+  document.getElementById("watchBtn").textContent = "Monitorar pasta de Downloads";
   setWatchStatus(msg || "Monitoramento parado.");
 }
 
@@ -1249,7 +1329,7 @@ function stopWatch(msg){
   delBox.addEventListener("change", ()=> storeSet("watch_delete", delBox.checked ? "1" : "0"));
   const btn = document.getElementById("watchBtn");
   const saved = await idbHandle("get");
-  if(saved){ btn.textContent = "📁 Retomar monitoramento (" + saved.name + ")"; }
+  if(saved){ btn.textContent = "Retomar monitoramento (" + saved.name + ")"; }
   btn.addEventListener("click", async ()=>{
     if(watchTimer){ stopWatch(); return; }
     try{
@@ -1288,7 +1368,7 @@ function updateQueueNote(){
   const ec = document.getElementById("examCard");
   if(ec.style.display === "block" && el.parentNode !== ec){ ec.insertBefore(el, ec.children[1]); }
   else if(reviewCard.style.display === "block" && el.parentNode !== reviewCard){ reviewCard.insertBefore(el, reviewCard.children[1]); }
-  el.textContent = pdfQueue.length ? `📥 ${pdfQueue.length} PDF(s) na fila — aparecem ao salvar ou cancelar este.` : "";
+  el.textContent = pdfQueue.length ? `Mais ${pdfQueue.length} PDF(s) na fila. Aparecem quando você salvar ou descartar este.` : "";
 }
 function nextInQueue(){
   updateQueueNote();
@@ -1314,18 +1394,17 @@ async function handleFile(file){
     await fillReview(data);
     const hasPositional = Object.values(data.series).some(s=>s.length>0);
     statusEl.textContent = hasPositional
-      ? "PDF lido, com gráfico de tendência no dia disponível. Confira os campos antes de salvar."
-      : "PDF lido. Confira os campos abaixo antes de salvar (gráfico de tendência no dia não disponível para este layout).";
+      ? "Balanço lido. Confira abaixo e salve."
+      : "Balanço lido, mas sem o gráfico do dia (layout diferente). Confira abaixo e salve.";
     statusEl.className = "ok";
   }catch(err){
     console.error(err);
     lastParsedSeries = null;
     lastParsedImplausible = [];
-    statusEl.textContent = "Não consegui ler este PDF automaticamente (" + (err && err.message ? err.message : err) + "). Você pode preencher os campos manualmente abaixo.";
+    statusEl.textContent = "Não consegui ler este PDF (" + (err && err.message ? err.message : err) + "). Confira se é o balanço ou o laudo de exames do MV e tente de novo.";
     statusEl.className = "err";
-    await fillReview({nome:"",leito:"",atend:"",dataBal:"",ganhos:"",perdas:"",diurese:"",balanco:"",
-      fc:{min:"",max:""},fr:{min:"",max:""},pam:{min:"",max:""},sat:{min:"",max:""},temp:{min:"",max:""},
-      glic:[],dorSim:"",evacCount:"",evacVol:"",implausible:[]});
+    reviewCard.style.display = "none";
+    nextInQueue();
   }
 }
 
@@ -1372,6 +1451,8 @@ async function fillReview(d){
   document.getElementById("rPeso").value = lastSettings.peso ?? "";
   document.getElementById("rNoraMg").value = lastSettings.noraMg ?? "";
   document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
+  renderReviewSummary();
+  reviewCard.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
 function readExtraFields(){
@@ -1384,22 +1465,65 @@ function readExtraFields(){
   };
 }
 
-document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
-  const r = {
+// Registro montado a partir dos valores lidos (campos ocultos) + ajustes opcionais.
+function currentReviewRecord(){
+  const v = id => document.getElementById(id).value;
+  return {
     ...readExtraFields(),
-    diurese: parseFloat(document.getElementById("rDiurese").value) || "",
-    balanco: parseFloat(document.getElementById("rBalanco").value) || "",
-    fc: {min:document.getElementById("rFcMin").value, max:document.getElementById("rFcMax").value},
-    fr: {min:document.getElementById("rFrMin").value, max:document.getElementById("rFrMax").value},
-    pam: {min:document.getElementById("rPamMin").value, max:document.getElementById("rPamMax").value},
-    sat: {min:document.getElementById("rSatMin").value, max:document.getElementById("rSatMax").value},
-    temp: {min:document.getElementById("rTempMin").value, max:document.getElementById("rTempMax").value},
-    glic: document.getElementById("rGlic").value.split(",").map(s=>s.trim()).filter(Boolean),
-    dorSim: document.getElementById("rDorSim").value,
-    evacCount: document.getElementById("rEvacCount").value === "" ? "" : parseInt(document.getElementById("rEvacCount").value),
-    evacVol: document.getElementById("rEvacVol").value === "" ? "" : parseFloat(document.getElementById("rEvacVol").value)
+    nome: v("rNome"), leito: v("rLeito"), atend: v("rAtend"), dataBal: v("rData"),
+    ganhos: parseFloat(v("rGanhos")) || 0, perdas: parseFloat(v("rPerdas")) || 0,
+    diurese: parseFloat(v("rDiurese")) || "",
+    balanco: parseFloat(v("rBalanco")) || "",
+    fc: {min:v("rFcMin"), max:v("rFcMax")}, fr: {min:v("rFrMin"), max:v("rFrMax")},
+    pam: {min:v("rPamMin"), max:v("rPamMax")}, sat: {min:v("rSatMin"), max:v("rSatMax")},
+    temp: {min:v("rTempMin"), max:v("rTempMax")},
+    glic: v("rGlic").split(",").map(x=>x.trim()).filter(Boolean),
+    dorSim: v("rDorSim"),
+    evacCount: v("rEvacCount") === "" ? "" : parseInt(v("rEvacCount")),
+    evacVol: v("rEvacVol") === "" ? "" : parseFloat(v("rEvacVol"))
   };
-  copyToClipboard(buildProntuarioText(r), e.target);
+}
+
+// Conferência somente leitura: quem, balanço em destaque, valores e prévia do texto.
+function renderReviewSummary(){
+  const r = currentReviewRecord();
+  const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const rng = (o, u) => (o.min === "" || o.min == null) ? "—" : `${esc(o.min)}–${esc(o.max)} <span>${u}</span>`;
+  const bal = typeof r.balanco === "number" ? r.balanco : 0;
+  const entra = Math.abs(r.ganhos || 0), sai = Math.abs(r.perdas || 0), maxF = Math.max(entra, sai, 1);
+  const fluid = [`<div class="fluid"><dt>Diurese</dt><dd>${r.diurese !== "" ? Math.abs(r.diurese) : "—"} <span>mL</span></dd></div>`]
+    .concat((r.drenos||[]).map(d=>`<div class="fluid"><dt>${esc(d.label)}</dt><dd>${esc(d.total)} <span>mL</span></dd></div>`))
+    .concat(r.hd !== "" && r.hd != null ? [`<div class="fluid"><dt>Hemodiálise (UF)</dt><dd>${esc(r.hd)} <span>mL</span></dd></div>`] : []);
+  document.getElementById("reviewSummary").innerHTML = `
+    <div class="who">
+      <div class="leito"><small>Leito</small>${esc(r.leito || "—")}</div>
+      <div><div class="nome">${esc(r.nome || "Paciente sem nome")}</div>
+        <div class="sub">Balanço de ${esc(r.dataBal || "?")}${r.atend ? `, atendimento ${esc(r.atend)}` : ""}</div></div>
+    </div>
+    <div class="bh">
+      <div><div class="num ${bal < 0 ? "neg" : "pos"}">${bal >= 0 ? "+" : "−"}${Math.abs(bal).toLocaleString("pt-BR")} mL</div><div class="cap">Balanço hídrico do período</div></div>
+      <div class="flow">
+        <div class="row in"><span>Entradas</span><div class="bar"><i style="width:${(entra/maxF*100).toFixed(1)}%"></i></div><span class="v">${entra.toLocaleString("pt-BR")} mL</span></div>
+        <div class="row out"><span>Saídas</span><div class="bar"><i style="width:${(sai/maxF*100).toFixed(1)}%"></i></div><span class="v">${sai.toLocaleString("pt-BR")} mL</span></div>
+      </div>
+    </div>
+    <dl class="vals">
+      ${fluid.join("")}
+      <div class="pam"><dt>PAM</dt><dd>${rng(r.pam,"mmHg")}</dd></div>
+      <div class="fc"><dt>Frequência cardíaca</dt><dd>${rng(r.fc,"bpm")}</dd></div>
+      <div class="sat"><dt>Saturação</dt><dd>${rng(r.sat,"%")}</dd></div>
+      <div><dt>Frequência respiratória</dt><dd>${rng(r.fr,"irpm")}</dd></div>
+      <div class="temp"><dt>Temperatura</dt><dd>${rng(r.temp,"°C")}</dd></div>
+      <div><dt>Glicemias</dt><dd>${r.glic.length ? esc(r.glic.join(", ")) + " <span>mg/dL</span>" : "—"}</dd></div>
+      <div><dt>Dor</dt><dd>${esc(r.dorSim || "—")}</dd></div>
+      <div><dt>Evacuação</dt><dd>${esc(evacText(r))}</dd></div>
+    </dl>`;
+  document.getElementById("reviewPreview").textContent = buildProntuarioText(r);
+}
+["rHoras","rPeso","rNoraMg","rNoraMl"].forEach(id=> document.getElementById(id).addEventListener("input", renderReviewSummary));
+
+document.getElementById("copyReviewBtn").addEventListener("click", (e)=>{
+  copyToClipboard(buildProntuarioText(currentReviewRecord()), e.target);
 });
 
 document.getElementById("cancelBtn").addEventListener("click", ()=>{
@@ -1607,7 +1731,7 @@ function getAlerts(r){
 // Minimal inline SVG sparkline. values: array of numbers or null (gaps allowed).
 function sparklineSVG(values, opts={}){
   const w = opts.width || 170, h = opts.height || 54, pad = 6;
-  const color = opts.color || "#2fb4a3";
+  const color = opts.color || "#1565A3";
   const pts = values.map((v,i)=>({v, i})).filter(o => o.v !== null && o.v !== undefined && !isNaN(o.v));
   if(pts.length === 0){
     return `<div style="font-size:11px; color:var(--muted); width:${w}px;">sem dados suficientes</div>`;
@@ -1654,11 +1778,11 @@ function buildTrendSection(history){
     <div class="trend-section">
       <div class="trend-title">Evolução entre plantões (${labels[0]} → ${labels[labels.length-1]})</div>
       <div class="trend-grid">
-        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#2fb4a3"})}</div>
-        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#e0a458"})}</div>
-        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#2fb4a3"})}</div>
-        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#d9694f"})}</div>
-        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#e0a458"})}</div>
+        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#1565A3"})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#C0392B"})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#0E7C9A"})}</div>
+        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#2E8B57"})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#B26A00"})}</div>
       </div>
     </div>
   `;
@@ -1682,11 +1806,11 @@ function buildIntradaySection(record){
     <div class="trend-section">
       <div class="trend-title">Tendência no dia (por horário registrado no PDF)</div>
       <div class="trend-grid">
-        <div class="mini-chart"><div class="mini-label">FC (bpm)</div>${sparklineSVG(seriesToHourArray(s.fc),{color:"#d9694f",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">PAM (mmHg)</div>${sparklineSVG(seriesToHourArray(s.pam),{color:"#e0a458",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">SatO2 (%)</div>${sparklineSVG(seriesToHourArray(s.sat),{color:"#2fb4a3",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">Temp (°C)</div>${sparklineSVG(seriesToHourArray(s.temp),{color:"#e0a458",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">Glicemia (mg/dL)</div>${sparklineSVG(seriesToHourArray(s.glic),{color:"#2fb4a3",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">FC (bpm)</div>${sparklineSVG(seriesToHourArray(s.fc),{color:"#2E8B57",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM (mmHg)</div>${sparklineSVG(seriesToHourArray(s.pam),{color:"#C0392B",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 (%)</div>${sparklineSVG(seriesToHourArray(s.sat),{color:"#0E7C9A",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp (°C)</div>${sparklineSVG(seriesToHourArray(s.temp),{color:"#B26A00",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Glicemia (mg/dL)</div>${sparklineSVG(seriesToHourArray(s.glic),{color:"#6B5CA5",width:220})}</div>
       </div>
     </div>
   `;
@@ -1762,34 +1886,34 @@ function buildDualAxisSVG(record){
     return {path, circles, last: pts[pts.length-1]};
   }
 
-  const pamLine = pathFor(pamSeries, yPam, "value", "#e0a458");
-  const balLine = pathFor(vaso.balancoIntervalo||[], yBal, "value", "#2fb4a3");
-  const noraLine = pathFor(vaso.doseSeries||[], yNora, "dose", "#d9694f");
-  const diureseLine = pathFor(vaso.diureseRel||[], yDiu, "mlkgh", "#8b7fd6");
+  const pamLine = pathFor(pamSeries, yPam, "value", "#C0392B");
+  const balLine = pathFor(vaso.balancoIntervalo||[], yBal, "value", "#1565A3");
+  const noraLine = pathFor(vaso.doseSeries||[], yNora, "dose", "#7A4EAB");
+  const diureseLine = pathFor(vaso.diureseRel||[], yDiu, "mlkgh", "#6B5CA5");
 
   const pamTicks = [pamMin, (pamMin+pamMax)/2, pamMax];
   const balTicks = [balMin, (balMin+balMax)/2, balMax];
-  const leftTicks = pamTicks.map(v=>`<text x="${padL-6}" y="${(yPam(v)+3).toFixed(1)}" font-size="9" fill="#e0a458" text-anchor="end">${Math.round(v)}</text>`).join("");
-  const rightTicks = balTicks.map(v=>`<text x="${w-padR+6}" y="${(yBal(v)+3).toFixed(1)}" font-size="9" fill="#2fb4a3" text-anchor="start">${Math.round(v)}</text>`).join("");
+  const leftTicks = pamTicks.map(v=>`<text x="${padL-6}" y="${(yPam(v)+3).toFixed(1)}" font-size="9" fill="#C0392B" text-anchor="end">${Math.round(v)}</text>`).join("");
+  const rightTicks = balTicks.map(v=>`<text x="${w-padR+6}" y="${(yBal(v)+3).toFixed(1)}" font-size="9" fill="#1565A3" text-anchor="start">${Math.round(v)}</text>`).join("");
   let xTicks = "";
   for(let i=0;i<24;i+=4){
-    xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#8fa3b3" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
+    xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#5B6B75" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
   }
 
   return `<svg width="${w}" height="${h}" style="max-width:100%;">
     ${bands}
-    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#2a3b48"></line>
-    <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#2a3b48"></line>
-    <line x1="${padL}" y1="${padT+plotH}" x2="${w-padR}" y2="${padT+plotH}" stroke="#2a3b48"></line>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
+    <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
+    <line x1="${padL}" y1="${padT+plotH}" x2="${w-padR}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
     ${leftTicks}${rightTicks}${xTicks}
-    <path d="${pamLine.path}" fill="none" stroke="#e0a458" stroke-width="2"></path>${pamLine.circles}
-    <path d="${balLine.path}" fill="none" stroke="#2fb4a3" stroke-width="2"></path>${balLine.circles}
-    <path d="${noraLine.path}" fill="none" stroke="#d9694f" stroke-width="2" stroke-dasharray="4,2"></path>${noraLine.circles}
-    <path d="${diureseLine.path}" fill="none" stroke="#8b7fd6" stroke-width="2" stroke-dasharray="4,2"></path>${diureseLine.circles}
-    ${pamLine.last ? `<text x="${(xOf(pamLine.last.idx)+4).toFixed(1)}" y="${(yPam(pamLine.last.v)-4).toFixed(1)}" font-size="9" fill="#e0a458">PAM ${pamLine.last.v}</text>` : ""}
-    ${balLine.last ? `<text x="${(xOf(balLine.last.idx)+4).toFixed(1)}" y="${(yBal(balLine.last.v)-4).toFixed(1)}" font-size="9" fill="#2fb4a3">Bal ${balLine.last.v.toFixed(0)}mL</text>` : ""}
-    ${noraLine.last ? `<text x="${(xOf(noraLine.last.idx)+4).toFixed(1)}" y="${(yNora(noraLine.last.v)+12).toFixed(1)}" font-size="9" fill="#d9694f">Nora ${noraLine.last.v.toFixed(3)}mcg/kg/min</text>` : ""}
-    ${diureseLine.last ? `<text x="${(xOf(diureseLine.last.idx)+4).toFixed(1)}" y="${(yDiu(diureseLine.last.v)+12).toFixed(1)}" font-size="9" fill="#8b7fd6">DU ${diureseLine.last.v.toFixed(2)}mL/kg/h</text>` : ""}
+    <path d="${pamLine.path}" fill="none" stroke="#C0392B" stroke-width="2"></path>${pamLine.circles}
+    <path d="${balLine.path}" fill="none" stroke="#1565A3" stroke-width="2"></path>${balLine.circles}
+    <path d="${noraLine.path}" fill="none" stroke="#7A4EAB" stroke-width="2" stroke-dasharray="4,2"></path>${noraLine.circles}
+    <path d="${diureseLine.path}" fill="none" stroke="#6B5CA5" stroke-width="2" stroke-dasharray="4,2"></path>${diureseLine.circles}
+    ${pamLine.last ? `<text x="${(xOf(pamLine.last.idx)+4).toFixed(1)}" y="${(yPam(pamLine.last.v)-4).toFixed(1)}" font-size="9" fill="#C0392B">PAM ${pamLine.last.v}</text>` : ""}
+    ${balLine.last ? `<text x="${(xOf(balLine.last.idx)+4).toFixed(1)}" y="${(yBal(balLine.last.v)-4).toFixed(1)}" font-size="9" fill="#1565A3">Bal ${balLine.last.v.toFixed(0)}mL</text>` : ""}
+    ${noraLine.last ? `<text x="${(xOf(noraLine.last.idx)+4).toFixed(1)}" y="${(yNora(noraLine.last.v)+12).toFixed(1)}" font-size="9" fill="#7A4EAB">Nora ${noraLine.last.v.toFixed(3)}mcg/kg/min</text>` : ""}
+    ${diureseLine.last ? `<text x="${(xOf(diureseLine.last.idx)+4).toFixed(1)}" y="${(yDiu(diureseLine.last.v)+12).toFixed(1)}" font-size="9" fill="#6B5CA5">DU ${diureseLine.last.v.toFixed(2)}mL/kg/h</text>` : ""}
   </svg>`;
 }
 
@@ -1902,11 +2026,11 @@ function buildExamSection(pid, exams){
   const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const row = (e, i, open) => `
     <details ${open ? "open" : ""} style="margin:4px 0;">
-      <summary style="cursor:pointer; font-size:12px;"><b>Exames ${esc(e.coleta || "")}</b>
-        <button class="del-btn copy-exam" data-id="${pid}" data-idx="${i}" style="margin-left:8px;">Copiar p/ prontuário</button>
-        <button class="danger del-btn del-exam" data-id="${pid}" data-idx="${i}">Excluir</button>
+      <summary style="cursor:pointer; font-size:14px;"><b>Coleta ${esc(e.coleta || "")}</b>
+        <button class="del-btn copy-exam" data-id="${pid}" data-idx="${i}" style="margin-left:8px;">Copiar</button>
+        <button class="quiet danger del-btn del-exam" data-id="${pid}" data-idx="${i}">Excluir</button>
       </summary>
-      <pre style="white-space:pre-wrap; font-size:11.5px; margin:6px 0 0; padding:8px; background:var(--bg2, rgba(127,127,127,.08)); border-radius:6px;">${esc(e.text)}</pre>
+      <pre class="copia" style="margin-top:6px;">${esc(e.text)}</pre>
     </details>`;
   const n = exams.length;
   return `<div class="record"><div class="rec-head"><div class="rec-date">Exames laboratoriais (${n})</div></div>
@@ -1935,7 +2059,7 @@ async function renderPatients(){
     const lastSave = Math.max(0, ...history.map(r=>Date.parse(r.savedAt)||0), ...exams.map(e=>Date.parse(e.savedAt)||0));
     const horasSem = lastSave ? (Date.now() - lastSave) / 3600000 : 0;
     const staleHtml = horasSem > 72
-      ? `<div style="margin-top:6px; font-size:12px; color:var(--accent2);">⏳ Sem registros há ${Math.floor(horasSem/24)} dias — possível alta. Use <b>Alta</b> para remover os dados e o vínculo do código.</div>`
+      ? `<div class="stale">Sem registros há ${Math.floor(horasSem/24)} dias. Se o paciente saiu da UTI, use Alta para apagar os dados e o vínculo do código.</div>`
       : "";
     const totalDiurese = history.reduce((a,r)=>a+(r.diurese||0),0);
     const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
@@ -1944,21 +2068,24 @@ async function renderPatients(){
     block.className = "card patient-block";
     block.innerHTML = `
       <div class="patient-head">
-        <div>
-          <div class="name">${p.nome}</div>
-          <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""} · Código no log: <b>${p.cod || "—"}</b></div>
-          ${staleHtml}
+        <div class="who" style="margin:0;">
+          <div class="leito"><small>Leito</small>${p.leito || "—"}</div>
+          <div>
+            <div class="name">${p.nome}</div>
+            <div class="meta">${p.atend ? "Atendimento " + p.atend + ", " : ""}código no log ${p.cod || "—"}</div>
+            ${staleHtml}
+          </div>
         </div>
-        <div style="display:flex; gap:8px;">
-          <button class="print-patient" data-id="${p.id}">Imprimir relatório</button>
+        <div class="actions">
+          ${history.length ? `<button class="quiet print-patient" data-id="${p.id}">Imprimir</button>` : ""}
           <button class="alta-patient" data-id="${p.id}">Alta</button>
-          <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
+          <button class="quiet danger del-patient" data-id="${p.id}">Excluir</button>
         </div>
       </div>
       <div class="cumulative" style="${history.length ? "" : "display:none;"}">
         <div class="stat"><div class="label">Diurese acumulada</div><div class="value">${totalDiurese.toFixed(0)} mL</div></div>
-        <div class="stat"><div class="label">Balanço hídrico acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
-        <div class="stat"><div class="label">Registros</div><div class="value">${history.length}</div></div>
+        <div class="stat"><div class="label">Balanço acumulado</div><div class="value ${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</div></div>
+        <div class="stat"><div class="label">Balanços salvos</div><div class="value">${history.length}</div></div>
       </div>
       ${history.length ? buildTrendSection(history) : ""}
       ${buildExamSection(p.id, exams)}
@@ -1974,12 +2101,12 @@ async function renderPatients(){
         <div class="rec-head">
           <div class="rec-date">${r.dataBal}</div>
           <div style="display:flex; gap:6px;">
-            <button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar p/ prontuário</button>
-            <button class="danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button>
+            <button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar</button>
+            <button class="quiet danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button>
           </div>
         </div>
-        ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">⚠ ${a.text}</span>`).join('')}</div>` : ''}
-        ${(r.implausible && r.implausible.length) ? `<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">⚠ ${r.implausible.length} valor(es) fisiologicamente implausível(is) excluído(s) do cálculo (prováveis erros de digitação no PDF original)</div>` : ''}
+        ${alerts.length ? `<div>${alerts.map(a=>`<span class="alert-chip alert-${a.level}">${a.text}</span>`).join('')}</div>` : ''}
+        ${(r.implausible && r.implausible.length) ? `<div style="font-size:13px; color:var(--muted); margin-bottom:6px;">${r.implausible.length} valor(es) impossível(is) ignorado(s) no cálculo (provável erro de digitação no MV).</div>` : ''}
         ${buildIntradaySection(r)}
         ${buildVasoSection(r)}
         <div class="grid">
@@ -1992,7 +2119,7 @@ async function renderPatients(){
           <div><span class="k">PAM</span><span class="v">${fmtRange(r.pam)} mmHg</span></div>
           <div><span class="k">SatO2</span><span class="v">${fmtRange(r.sat)} %</span></div>
           <div><span class="k">Temp</span><span class="v">${fmtRange(r.temp)} °C</span></div>
-          <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(" · "):"—"}</span></div>
+          <div><span class="k">Glicemias</span><span class="v">${r.glic.length?r.glic.join(", "):"—"}</span></div>
           <div><span class="k">Dor</span><span class="v">${r.dorSim || "—"}</span></div>
           <div><span class="k">Evacuação</span><span class="v">${evacText(r)}</span></div>
         </div>
@@ -2126,13 +2253,14 @@ async function renderLog(){
   const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
   const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   document.getElementById("logList").innerHTML = log.length
-    ? log.slice(-80).reverse().map(e=>`<div style="padding:3px 0; border-bottom:1px solid var(--line);"><b>${fmtTs(e.ts)}</b> · ${esc(e.acao)} · leito ${esc(e.leito)} · ${esc(e.cod || "—")}${e.det ? `<br><span style="color:var(--muted);">${esc(e.det).replace(/\n/g,"<br>")}</span>` : ""}</div>`).join("")
+    ? log.slice(-80).reverse().map(e=>`<div style="padding:5px 0; border-bottom:1px solid var(--line);"><b>${fmtTs(e.ts)}</b>, ${esc(e.acao)}, leito ${esc(e.leito)}, ${esc(e.cod || "—")}${e.det ? `<br><span style="color:var(--muted);">${esc(e.det).replace(/\n/g,"<br>")}</span>` : ""}</div>`).join("")
       + (log.length > 80 ? `<div style="color:var(--muted); padding-top:4px;">… ${log.length - 80} eventos anteriores no CSV.</div>` : "")
     : `<div style="color:var(--muted);">Nenhum evento registrado ainda.</div>`;
 }
 document.getElementById("logBtn").addEventListener("click", ()=>{
   const p = document.getElementById("logPanel");
   p.style.display = p.style.display === "block" ? "none" : "block";
+  document.getElementById("logBtn").textContent = p.style.display === "block" ? "Ocultar log" : "Mostrar log";
   if(p.style.display === "block") renderLog();
 });
 document.getElementById("logExportBtn").addEventListener("click", async ()=>{
@@ -2235,6 +2363,7 @@ document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
   window.print();
 });
 
+document.getElementById("hojeData").textContent = new Date().toLocaleDateString("pt-BR", {weekday:"long", day:"numeric", month:"long"});
 migrarLogAntigo().then(renderPatients).then(()=>{
   const note = document.getElementById("persistNote");
   note.textContent = storageAvailable
