@@ -1255,13 +1255,61 @@ function buildExamText(ex){
 // bater (laboratório e MV às vezes numeram diferente, ou o PDF não traz o número),
 // pelo nome completo idêntico (sem acentos/espaços extras).
 function resolvePatientId(index, atend, nome){
-  if(atend){ const byA = index.find(p=>p.id === "atd_" + atend || p.atend === atend); if(byA) return byA.id; }
+  if(atend){ const byA = index.find(p=>p.id === "atd_" + atend || p.atend === atend || (p.atends||[]).includes(atend)); if(byA) return byA.id; }
   const n = norm(nome || "").replace(/\s+/g," ").trim();
   if(n && n !== "PACIENTE SEM NOME"){
     const byN = index.find(p => norm(p.nome || "").replace(/\s+/g," ").trim() === n);
     if(byN) return byN.id;
   }
   return atend ? ("atd_" + atend) : ("nm_" + (nome || "Paciente sem nome").replace(/\s+/g,"_"));
+}
+
+// Une cadastros duplicados do mesmo paciente (mesmo nome completo). Acontece porque
+// MV e laboratório usam números de atendimento diferentes, ou porque foram salvos
+// antes da ligação por nome existir. Junta balanços e exames no cadastro que tem
+// balanço (leito do MV) e guarda todos os números de atendimento.
+const nomeChave = n => norm(n || "").replace(/\s+/g," ").trim();
+async function unirDuplicados(){
+  let index = JSON.parse(await storeGet("index_pacientes") || "[]");
+  const grupos = {};
+  index.forEach(p=>{ const k = nomeChave(p.nome); if(k && k !== "PACIENTE SEM NOME") (grupos[k] = grupos[k] || []).push(p); });
+  let mudou = false;
+  for(const k of Object.keys(grupos)){
+    const g = grupos[k];
+    if(g.length < 2) continue;
+    const comHist = [];
+    for(const p of g){ const h = JSON.parse(await storeGet("hist_" + p.id) || "[]"); comHist.push({p, h, e: JSON.parse(await storeGet("exam_" + p.id) || "[]")}); }
+    comHist.sort((a,b)=> (b.h.length - a.h.length) || ((b.p.leito && b.p.leito !== "—") - (a.p.leito && a.p.leito !== "—")));
+    const prim = comHist[0];
+    let hist = [], exams = [];
+    const atends = new Set();
+    comHist.forEach(x=>{
+      hist = hist.concat(x.h);
+      x.e.forEach(e=>{ if(!exams.some(y=>y.coleta === e.coleta)) exams.push(e); });
+      [x.p.atend].concat(x.p.atends||[]).filter(Boolean).forEach(a=>atends.add(a));
+    });
+    hist.sort((a,b)=> String(a.savedAt||"").localeCompare(String(b.savedAt||"")));
+    exams.sort((a,b)=> coletaKey(a.coleta).localeCompare(coletaKey(b.coleta)));
+    const leito = comHist.map(x=>x.p.leito).find(l=>l && l !== "—") || "—";
+    await storeSet("hist_" + prim.p.id, JSON.stringify(hist));
+    if(exams.length) await storeSet("exam_" + prim.p.id, JSON.stringify(exams));
+    for(const x of comHist.slice(1)){
+      localStorage.removeItem(STORAGE_PREFIX + "hist_" + x.p.id);
+      localStorage.removeItem(STORAGE_PREFIX + "exam_" + x.p.id);
+    }
+    const outros = new Set(comHist.slice(1).map(x=>x.p.id));
+    index = index.filter(p=>!outros.has(p.id)).map(p => p.id === prim.p.id ? {...p, leito, atends:[...atends], atend: p.atend || [...atends][0] || ""} : p);
+    await logEvent("cadastros duplicados unidos", prim.p.cod, leito, `${g.length} cadastros (atendimentos MV/laboratório diferentes)`);
+    mudou = true;
+  }
+  if(mudou) await storeSet("index_pacientes", JSON.stringify(index));
+  return mudou;
+}
+// Registra um nº de atendimento extra (ex.: do laboratório) no cadastro.
+function addAtend(index, id, atend){
+  if(!atend) return;
+  const p = index.find(x=>x.id===id);
+  if(p){ p.atends = Array.from(new Set([].concat(p.atends||[], p.atend ? [p.atend] : [], [atend]))); }
 }
 
 // "22/11/2026 03:41" → "202611220341" (ordenável)
@@ -1317,6 +1365,7 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
   if(!index.find(p=>p.id===patientId)){
     index.push({id:patientId, nome, leito:"—", atend: ex.atend || ""});
   }
+  addAtend(index, patientId, ex.atend);
   garantirCodigos(index);
   await storeSet("index_pacientes", JSON.stringify(index));
   const pIdx = index.find(p=>p.id===patientId);
@@ -1729,6 +1778,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   } else {
     index = index.map(p=> p.id===patientId ? {...p, nome, leito, atend: atend || p.atend} : p);
   }
+  addAtend(index, patientId, atend);
   garantirCodigos(index);
   await storeSet("index_pacientes", JSON.stringify(index));
   const codBal = index.find(p=>p.id===patientId).cod;
@@ -2163,6 +2213,7 @@ function buildExamSection(pid, exams){
 }
 
 async function renderPatients(){
+  await unirDuplicados();
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
   container.innerHTML = "";
@@ -2467,6 +2518,7 @@ function buildUnitReport(rows){
     </div>`).join("");
 }
 document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
+  await unirDuplicados();
   const index = JSON.parse(await storeGet("index_pacientes") || "[]");
   const rows = [];
   for(const p of index){
