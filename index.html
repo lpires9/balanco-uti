@@ -781,7 +781,7 @@ const EXAM_ABBR = [
 ];
 // Linhas do texto: hemograma | renal+eletrólitos | hepático | coagulação | inflamatórios/cardíacos | gaso | outros
 const EXAM_LINES = [["hemato"],["renal","eletro"],["hep"],["coag"],["infl"],["gaso"],["outros"]];
-const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","UR","CR","NA","K","MG","CA","CAI","P","CL",
+const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","UR","CR","TFG","NA","K","MG","CA","CAI","P","CL",
   "BT","BD","BI","TGO","TGP","FA","GGT","ALB","AMIL","LIP","TAP","ATV","INR","TTPA","RATIO","FIBRIN","DD",
   "PCR","PCT","LAC","TROPO","CKMB","CPK","DHL","BNP"];
 
@@ -884,6 +884,11 @@ function parseExames(lineObjects){
     const ab = EXAM_ABBR.find(([re])=>re.test(b.tn));
     const label = ab ? ab[1] : b.title.replace(/\s*-.*$/,"").slice(0,18).toUpperCase();
     add(label, label, value, ab ? ab[2] : "outros", prev);
+    // Neste laboratório a TFG estimada vem como "Observação: 45,6" no bloco da creatinina.
+    if(label === "CR"){
+      const tfg = find(/^OBSERVACAO:\s*\d+(?:[.,]\d+)?\s*$/);
+      if(tfg) add("TFG", "TFG", examNum(tfg.raw.replace(/^[^\d]*/,"")), "renal");
+    }
   });
   return out;
 }
