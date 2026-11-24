@@ -1906,6 +1906,26 @@ function longestRun(series, predicate){
   return maxRun;
 }
 
+// Escapes glicêmicos com horário. Usa a série horária do PDF (tem a hora de
+// cada leitura); se o valor foi editado à mão na revisão e não bate com a
+// série, cai para a lista de glicemias sem hora.
+function glicEscapes(r){
+  const t = ALERT_THRESHOLDS;
+  const ser = ((r.series||{}).glic)||[];
+  const lista = (r.glic||[]).map(g=>parseFloat(g)).filter(v=>!isNaN(v));
+  const serVals = ser.map(p=>p.value).join(",");
+  const pts = ser.length && serVals === lista.join(",") ? ser.map(p=>({value:p.value, hour:p.hour}))
+                                                      : lista.map(v=>({value:v, hour:null}));
+  return {
+    hipo: pts.filter(p=>p.value < t.glicHipoglicemia),
+    hiper: pts.filter(p=>p.value >= t.glicHiperglicemia),
+    temDados: pts.length > 0
+  };
+}
+function fmtGlicList(arr){
+  return arr.map(p=> p.hour ? `${p.value} (${p.hour.slice(0,2)}h)` : `${p.value}`).join(", ");
+}
+
 function getAlerts(r){
   const t = ALERT_THRESHOLDS;
   const alerts = [];
@@ -1933,16 +1953,9 @@ function getAlerts(r){
   if(!isNaN(tempMin) && tempMin < t.tempHipotermia) alerts.push({level:'warn', text:`Hipotermia (Temp mín ${r.temp.min}°C)`});
   if(!isNaN(tempMax) && tempMax >= t.tempFebre) alerts.push({level:'warn', text:`Febre (Temp máx ${r.temp.max}°C)`});
 
-  let hipoglicCount = 0, hiperglicCount = 0;
-  (r.glic||[]).forEach(g=>{
-    const v = parseFloat(g);
-    if(!isNaN(v)){
-      if(v < t.glicHipoglicemia) hipoglicCount++;
-      if(v >= t.glicHiperglicemia) hiperglicCount++;
-    }
-  });
-  if(hipoglicCount>0) alerts.push({level:'warn', text: hipoglicCount===1 ? 'Hipoglicemia registrada' : `${hipoglicCount}x hipoglicemia registrada`});
-  if(hiperglicCount>0) alerts.push({level:'warn', text: `${hiperglicCount} escape${hiperglicCount>1?'s':''} glicêmico${hiperglicCount>1?'s':''} (≥${t.glicHiperglicemia} mg/dL)`});
+  const ge = glicEscapes(r);
+  if(ge.hipo.length) alerts.push({level:'warn', text: `${ge.hipo.length===1 ? 'Hipoglicemia' : ge.hipo.length + 'x hipoglicemia'} (<${t.glicHipoglicemia}): ${fmtGlicList(ge.hipo)}`});
+  if(ge.hiper.length) alerts.push({level:'warn', text: `${ge.hiper.length} escape${ge.hiper.length>1?'s':''} glicêmico${ge.hiper.length>1?'s':''} (≥${t.glicHiperglicemia}): ${fmtGlicList(ge.hiper)}`});
 
   if(!isNaN(r.balanco)){
     if(r.balanco > t.balancoExtremo) alerts.push({level:'info', text:`Balanço muito positivo (+${r.balanco} mL)`});
@@ -2559,6 +2572,14 @@ function buildUnitReport(rows){
   const days = [];
   if(lastDay){ const d0 = dateBR(lastDay); for(let i=3;i>=0;i--){ const d = new Date(d0); d.setDate(d.getDate()-i); days.push(d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"})); } }
 
+  const glicCell = r => {
+    const g = glicEscapes(r);
+    if(!g.temDados) return "—";
+    const partes = [];
+    if(g.hiper.length) partes.push(`<b>${g.hiper.length}× ↑</b> ${fmtGlicList(g.hiper)}`);
+    if(g.hipo.length) partes.push(`<b>${g.hipo.length}× ↓</b> ${fmtGlicList(g.hipo)}`);
+    return partes.length ? partes.join("; ") : "Nenhum";
+  };
   const block = ({p, history, exams}, i) => {
     const r = history[history.length-1];
     const se = series[i];
@@ -2570,6 +2591,7 @@ function buildUnitReport(rows){
       <tr><td>Diurese</td><td>${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) + " mL" : "—"}</td></tr>
       <tr><td>Drenos</td><td class="wrap">${dren}</td></tr>
       <tr><td>Hemodiálise</td><td>${r.hd !== "" && r.hd != null ? r.hd + " mL" : "—"}</td></tr>
+      <tr><td>Escape glic.</td><td class="wrap">${glicCell(r)}</td></tr>
       <tr><td>Balanço</td><td class="big">${r.balanco >= 0 ? "+" : ""}${r.balanco} mL</td></tr>`
       : `<tr><td colspan="2">Sem balanço salvo</td></tr>`;
     const exRows = days.map(d => `<tr><td>${d.slice(0,5)}</td>${UNIT_EX_KEYS.map(k => {
@@ -2596,7 +2618,7 @@ function buildUnitReport(rows){
   for(let i=0;i<blocks.length;i+=UNIT_PER_PAGE) pages.push(blocks.slice(i, i+UNIT_PER_PAGE));
   const quando = fmtTs(new Date().toISOString());
   return pages.map((pg, n) => `<div class="u-page">
-      <div class="u-pagehead"><span><b>Relatório da UTI</b> — ${quando}</span><span>Negrito = alterado, ! = crítico. Plaquetas e leucócitos em mil (k).</span><span>Folha ${n+1}/${pages.length}</span></div>
+      <div class="u-pagehead"><span><b>Relatório da UTI</b> — ${quando}</span><span>Negrito = alterado, ! = crítico. Plaquetas e leucócitos em mil (k). Glic: ↑ ≥${ALERT_THRESHOLDS.glicHiperglicemia}, ↓ &lt;${ALERT_THRESHOLDS.glicHipoglicemia}.</span><span>Folha ${n+1}/${pages.length}</span></div>
       ${pg.join("")}
     </div>`).join("");
 }
