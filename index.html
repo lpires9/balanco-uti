@@ -1,19 +1,13 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="night">
 <head>
 <meta charset="UTF-8">
 <title>Controle Acumulado — UTI</title>
 <!-- pdf.js 3.11.174 (build legacy) hospedado no próprio site + polyfills: funciona em navegadores antigos (Cent/Chromium 86) e não depende de CDN -->
+<script>try{ if(localStorage.getItem("uti_balanco_tema") === "day") document.documentElement.setAttribute("data-theme","day"); }catch(e){}</script>
 <script src="vendor/polyfills.js"></script>
 <script src="vendor/pdf.min.js"></script>
 <style>
-  /* Atkinson Hyperlegible (Braille Institute, OFL): distingue 1/l/I, 0/O, 5/S —
-     escolhida para leitura rápida de números à beira-leito. Hospedada no site. */
-  @font-face{ font-family:"Atkinson"; font-weight:400; font-style:normal; font-display:swap;
-    src:url("vendor/fonts/atkinson-hyperlegible-latin-400-normal.woff2") format("woff2"); }
-  @font-face{ font-family:"Atkinson"; font-weight:700; font-style:normal; font-display:swap;
-    src:url("vendor/fonts/atkinson-hyperlegible-latin-700-normal.woff2") format("woff2"); }
-
   :root{
     --paper:#F3F6F7;   /* fundo */
     --surface:#FFFFFF;
@@ -30,37 +24,61 @@
     /* nomes antigos usados por estilos inline gerados no JS */
     --bg:var(--paper); --panel:var(--surface); --panel2:#EEF3F5; --line:var(--rule); --text:var(--ink);
     --accent:var(--soro); --accent2:var(--warn); --danger:var(--crit); --bg2:#EEF3F5;
-    --mono:"Atkinson", "Segoe UI", sans-serif;
+    --mono:"Segoe UI", -apple-system, Roboto, Arial, sans-serif;
   }
+  /* Modo noite (padrão): menos brilho na UTI à noite. */
+  html[data-theme="night"]{
+    --paper:#0F1A21; --surface:#16232C; --ink:#E3EBF0; --muted:#93A5B1; --rule:#2A3A45;
+    --soro:#5AA9E6; --crit:#FF7B72; --warn:#E3A548; --ok:#5FC08A;
+    --ch-fc:#4CC38A; --ch-pam:#F07167; --ch-sat:#3FC1D9; --ch-temp:#E3A548; --ch-nora:#B08AE0; --ch-diu:#9C8FE0;
+    --panel2:#1B2A34; --bg2:#1B2A34;
+  }
+  html[data-theme="night"] .dropzone{ border-color:#3B5160; }
+  html[data-theme="night"] .dropzone.drag{ background:#18303F; }
+  html[data-theme="night"] button{ border-color:#3B5160; }
+  html[data-theme="night"] button.primary{ color:#08131A; }
+  html[data-theme="night"] button.quiet{ border-color:transparent; }
+  html[data-theme="night"] button.quiet:hover{ border-color:var(--rule); }
+  html[data-theme="night"] button.primary:hover{ background:#7BBDF0; }
+  html[data-theme="night"] button.danger{ border-color:#6B3833; }
+  html[data-theme="night"] .flow .bar{ background:#243641; }
+  html[data-theme="night"] .flow .out i{ background:#6F8592; }
+  html[data-theme="night"] pre.copia, html[data-theme="night"] textarea.copia{ background:#121E26; }
+  html[data-theme="night"] .alert-warn{ background:#3A1F1E; border-color:#7A3A35; }
+  html[data-theme="night"] .alert-info{ background:#3A2D17; border-color:#7A5A25; }
+  html[data-theme="night"] .field input, html[data-theme="night"] .field select{ border-color:#3B5160; }
+  html[data-theme="night"] #implausibleWarning{ background:#3A1F1E !important; border-color:#7A3A35 !important; }
+  .theme-btn{ margin-top:6px; }
+
   *{ box-sizing:border-box; }
   html{ background:var(--paper); }
   body{
     margin:0 auto; max-width:1120px; padding:28px 24px 48px;
-    color:var(--ink); font-family:"Atkinson","Segoe UI",Arial,sans-serif;
-    font-size:15px; line-height:1.45;
+    color:var(--ink); font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,Arial,sans-serif;
+    font-size:14px; line-height:1.45; font-variant-numeric:tabular-nums;
   }
   :focus-visible{ outline:3px solid #7FB3DA; outline-offset:2px; }
 
   /* ---- cabeçalho ---- */
   .top{ display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap;
         padding-bottom:14px; border-bottom:2px solid var(--ink); margin-bottom:22px; }
-  .top h1{ font-size:30px; line-height:1.05; margin:0; font-weight:700; letter-spacing:-.01em; }
+  .top h1{ font-size:22px; line-height:1.05; margin:0; font-weight:700; letter-spacing:-.01em; }
   .top p{ margin:4px 0 0; color:var(--muted); font-size:14px; max-width:60ch; }
   .top .hoje{ font-size:14px; color:var(--muted); text-align:right; }
-  .top .hoje b{ display:block; color:var(--ink); font-size:19px; }
+  .top .hoje b{ display:block; color:var(--ink); font-size:15px; }
 
   /* ---- seções ---- */
   .card{ margin:0 0 26px; }
-  .card h2{ font-size:19px; font-weight:700; margin:0 0 10px; }
+  .card h2{ font-size:16px; font-weight:700; margin:0 0 10px; }
   .card h2 small{ font-size:14px; font-weight:400; color:var(--muted); margin-left:8px; }
 
   /* ---- área de envio ---- */
   .dropzone{
     display:block;
     background:var(--surface); border:2px dashed #9FB4C0; border-radius:10px;
-    padding:34px 20px; text-align:center; cursor:pointer; color:var(--muted);
+    padding:24px 20px; text-align:center; cursor:pointer; color:var(--muted);
   }
-  .dropzone strong{ display:block; font-size:19px; color:var(--ink); margin-bottom:4px; }
+  .dropzone strong{ display:block; font-size:16px; color:var(--ink); margin-bottom:4px; }
   .dropzone.drag{ border-color:var(--soro); background:#EAF2F9; }
   .dropzone input{ display:none; }
   #status{ font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
@@ -86,14 +104,14 @@
   .panel{ background:var(--surface); border:1px solid var(--rule); border-radius:10px; padding:20px 22px; }
   .who{ display:flex; align-items:flex-start; gap:16px; margin-bottom:16px; }
   .leito{ min-width:46px; }
-  .leito{ font-size:34px; font-weight:700; line-height:1; color:var(--ink); }
+  .leito{ font-size:26px; font-weight:700; line-height:1; color:var(--ink); }
   .leito small{ display:block; font-size:12px; font-weight:400; color:var(--muted); }
-  .who .nome{ font-size:19px; font-weight:700; }
+  .who .nome{ font-size:16px; font-weight:700; }
   .who .sub{ color:var(--muted); font-size:14px; }
 
   .bh{ display:grid; grid-template-columns:auto 1fr; gap:6px 26px; align-items:center;
        padding:14px 0 16px; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); margin-bottom:16px; }
-  .bh .num{ font-size:44px; font-weight:700; line-height:1; letter-spacing:-.02em; }
+  .bh .num{ font-size:32px; font-weight:700; line-height:1; letter-spacing:-.02em; }
   .bh .num.pos{ color:var(--soro); }
   .bh .num.neg{ color:var(--warn); }
   .bh .cap{ font-size:13px; color:var(--muted); }
@@ -107,8 +125,8 @@
 
   dl.vals{ display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:12px 20px; margin:0 0 16px; }
   dl.vals div{ border-left:3px solid var(--rule); padding-left:10px; }
-  dl.vals dt{ font-size:13px; color:var(--muted); }
-  dl.vals dd{ margin:0; font-size:17px; font-weight:700; }
+  dl.vals dt{ font-size:12px; color:var(--muted); }
+  dl.vals dd{ margin:0; font-size:15px; font-weight:700; }
   dl.vals dd span{ font-size:13px; font-weight:400; color:var(--muted); }
   dl.vals .fc{ border-color:var(--ch-fc); } dl.vals .pam{ border-color:var(--ch-pam); }
   dl.vals .sat{ border-color:var(--ch-sat); } dl.vals .temp{ border-color:var(--ch-temp); }
@@ -117,7 +135,7 @@
   pre.copia, textarea.copia{
     display:block; width:100%; margin:0 0 14px; padding:12px 14px; border-radius:8px;
     background:#F6F9FA; border:1px solid var(--rule); color:var(--ink);
-    font:14px/1.5 "Atkinson","Segoe UI",sans-serif; white-space:pre-wrap; resize:none;
+    font:13px/1.5 "Segoe UI",-apple-system,Roboto,Arial,sans-serif; white-space:pre-wrap; resize:none;
   }
   .copia-label{ font-size:13px; color:var(--muted); margin:0 0 4px; }
   details.ajustes{ margin:0 0 16px; font-size:14px; }
@@ -134,14 +152,14 @@
   #patients{ display:flex; flex-direction:column; }
   .patient-block{ padding:18px 0 20px; border-top:2px solid var(--ink); margin:0; }
   .patient-head{ display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
-  .patient-head .name{ font-size:19px; font-weight:700; }
+  .patient-head .name{ font-size:16px; font-weight:700; }
   .patient-head .meta{ font-size:14px; color:var(--muted); }
   .cumulative{ display:flex; gap:28px; flex-wrap:wrap; margin-bottom:14px; }
   .cumulative .stat .label{ font-size:13px; color:var(--muted); }
-  .cumulative .stat .value{ font-size:22px; font-weight:700; }
+  .cumulative .stat .value{ font-size:17px; font-weight:700; }
   .record{ border-top:1px solid var(--rule); padding:12px 0; }
   .record .rec-head{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
-  .record .rec-date{ font-weight:700; font-size:16px; }
+  .record .rec-date{ font-weight:700; font-size:14px; }
   .record .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px 18px; font-size:14px; }
   .record .grid div span.k{ color:var(--muted); display:block; font-size:13px; }
   .record .grid div span.v{ font-weight:700; }
@@ -179,11 +197,12 @@
 
   #printArea{ display:none; }
   @media print {
-    body *{ visibility:hidden; }
-    #printArea, #printArea *{ visibility:visible; }
+    @page{ size:A4 portrait; margin:9mm 9mm; }
+    html, body{ background:#fff !important; color:#111 !important; padding:0 !important; margin:0 !important; max-width:none !important; }
+    body > *:not(#printArea){ display:none !important; }
     #printArea{
-      display:block; position:absolute; top:0; left:0; width:100%;
-      background:#fff; color:#111; padding:16px; font-family:Arial, sans-serif;
+      display:block; position:static; width:100%;
+      background:#fff; color:#111; padding:0; font-family:Arial, "Segoe UI", sans-serif;
     }
     .print-header{ border-bottom:2px solid #111; padding-bottom:8px; margin-bottom:12px; }
     .print-header h1{ font-size:18px; margin:0 0 2px 0; }
@@ -199,16 +218,29 @@
     .print-stat-grid .k{ color:#555; font-size:10px; text-transform:uppercase; display:block; }
     .print-trend-grid{ display:flex; flex-wrap:wrap; gap:16px; }
     .print-trend-grid .mini-label{ font-size:10px; color:#555; margin-bottom:2px; }
-    .unit-pt{ border-top:1.5px solid #111; padding:6px 0 8px; page-break-inside:avoid; }
-    .unit-pt h3{ font-size:13px; margin:0 0 4px; }
-    .unit-pt h3 span{ font-weight:normal; color:#444; font-size:11px; }
-    .unit-ctrl{ display:flex; flex-wrap:wrap; gap:4px 18px; font-size:11.5px; margin-bottom:5px; }
-    .unit-ctrl b{ font-size:9.5px; color:#555; text-transform:uppercase; margin-right:3px; }
-    table.unit-ex{ border-collapse:collapse; font-size:10px; }
-    table.unit-ex th, table.unit-ex td{ border:1px solid #bbb; padding:1px 5px; text-align:right; min-width:34px; }
-    table.unit-ex th:first-child, table.unit-ex td:first-child{ text-align:left; font-weight:bold; }
-    table.unit-ex td.crit{ font-weight:bold; text-decoration:underline; }
-    table.unit-ex td.warn{ font-weight:bold; }
+    /* Relatório da UTI: 5 blocos uniformes por folha A4 */
+    .u-page{ page-break-after:always; break-after:page; }
+    .u-page:last-child{ page-break-after:auto; break-after:auto; }
+    .u-pagehead{ display:flex; justify-content:space-between; font-size:9pt; border-bottom:1.5pt solid #111; padding-bottom:1.5mm; margin-bottom:2mm; height:7mm; box-sizing:border-box; }
+    .u-pagehead b{ font-size:11pt; }
+    .u-blk{ height:52mm; box-sizing:border-box; border:0.6pt solid #888; border-radius:1.5mm; padding:2mm 2.5mm; margin-bottom:2mm; overflow:hidden; page-break-inside:avoid; break-inside:avoid; }
+    .u-head{ display:flex; align-items:baseline; gap:3mm; height:6.5mm; border-bottom:0.5pt solid #bbb; margin-bottom:1.5mm; white-space:nowrap; overflow:hidden; }
+    .u-leito{ font-size:14pt; font-weight:bold; min-width:9mm; }
+    .u-nome{ font-size:10.5pt; font-weight:bold; overflow:hidden; text-overflow:ellipsis; }
+    .u-meta{ font-size:8pt; color:#444; margin-left:auto; }
+    .u-body{ display:flex; gap:3mm; }
+    table.u-ctrl{ width:54mm; min-width:54mm; max-width:54mm; flex:none; border-collapse:collapse; font-size:8.5pt; table-layout:fixed; }
+    table.u-ctrl td.wrap{ white-space:normal; line-height:1.15; max-height:7mm; overflow:hidden; font-size:7.8pt; }
+    table.u-ctrl td{ padding:0.4mm 1mm; border-bottom:0.4pt solid #ddd; white-space:nowrap; overflow:hidden; max-width:34mm; text-overflow:ellipsis; }
+    table.u-ctrl td:first-child{ color:#555; }
+    table.u-ctrl td.big{ font-weight:bold; font-size:10pt; }
+    table.u-ex{ flex:1; width:100%; border-collapse:collapse; font-size:7.8pt; table-layout:fixed; }
+    table.u-ex th, table.u-ex td{ border:0.4pt solid #bbb; padding:0.5mm 0.6mm; text-align:center; overflow:hidden; white-space:nowrap; }
+    table.u-ex th{ background:#eee; font-size:6.8pt; letter-spacing:-.1pt; }
+    table.u-ex td:first-child, table.u-ex th:first-child{ width:9mm; font-weight:bold; }
+    table.u-ex td.warn{ font-weight:bold; }
+    table.u-ex td.crit{ font-weight:bold; text-decoration:underline; }
+    .u-crit{ font-size:7.8pt; margin-top:1.2mm; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   }
 </style>
 <div id="printArea"></div>
@@ -220,7 +252,7 @@
     <h1>Balanço UTI</h1>
     <p>Solte o PDF do balanço ou dos exames do MV. Os valores são lidos, organizados por paciente e prontos para copiar no prontuário.</p>
   </div>
-  <div class="hoje">Plantão de<b id="hojeData"></b></div>
+  <div class="hoje">Plantão de<b id="hojeData"></b><button class="quiet theme-btn" id="themeBtn"></button></div>
 </header>
 
 <section class="card">
@@ -1039,7 +1071,7 @@ function buildExamTable(entries){
     return `<td style="text-align:right; padding:2px 8px; ${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
   };
   return `<div style="overflow-x:auto; margin-top:8px;">
-    <table class="exam-table" style="border-collapse:collapse; font-size:14px;">
+    <table class="exam-table" style="border-collapse:collapse; font-size:13px;">
       <tr><th style="text-align:left; padding:2px 8px;"></th>${days.map(d=>`<th style="padding:2px 8px; text-align:right;">${d.slice(0,5)}</th>`).join("")}</tr>
       ${keys.map(k=>`<tr style="border-top:1px solid var(--line);"><td style="padding:2px 8px; font-weight:600;">${k}</td>${days.map(d=>cell(k,d)).join("")}</tr>`).join("")}
     </table>
@@ -1165,6 +1197,19 @@ function buildExamText(ex){
   return lines.join("\n").toUpperCase();
 }
 
+// Mesmo paciente para balanço e exames: primeiro pelo nº de atendimento; se não
+// bater (laboratório e MV às vezes numeram diferente, ou o PDF não traz o número),
+// pelo nome completo idêntico (sem acentos/espaços extras).
+function resolvePatientId(index, atend, nome){
+  if(atend){ const byA = index.find(p=>p.id === "atd_" + atend || p.atend === atend); if(byA) return byA.id; }
+  const n = norm(nome || "").replace(/\s+/g," ").trim();
+  if(n && n !== "PACIENTE SEM NOME"){
+    const byN = index.find(p => norm(p.nome || "").replace(/\s+/g," ").trim() === n);
+    if(byN) return byN.id;
+  }
+  return atend ? ("atd_" + atend) : ("nm_" + (nome || "Paciente sem nome").replace(/\s+/g,"_"));
+}
+
 // "22/11/2026 03:41" → "202611220341" (ordenável)
 function coletaKey(c){
   const m = String(c||"").match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
@@ -1173,7 +1218,7 @@ function coletaKey(c){
 let currentExam = null;
 async function showExamReview(ex){
   currentExam = ex;
-  const pid = ex.atend ? ("atd_" + ex.atend) : ("nm_" + (ex.nome || "Paciente sem nome").replace(/\s+/g,"_"));
+  const pid = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), ex.atend, ex.nome);
   const saved = JSON.parse(await storeGet("exam_" + pid) || "[]").filter(e => e.coleta !== ex.coleta);
   document.getElementById("examAlerts").innerHTML = examAlertChips(examAlerts(saved.concat([ex])));
   const card = document.getElementById("examCard");
@@ -1206,7 +1251,7 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
   if(!currentExam) return;
   const ex = currentExam;
   const nome = ex.nome || "Paciente sem nome";
-  const patientId = ex.atend ? ("atd_" + ex.atend) : ("nm_" + nome.replace(/\s+/g,"_"));
+  const patientId = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), ex.atend, nome);
   let list = JSON.parse(await storeGet("exam_" + patientId) || "[]");
   const text = document.getElementById("examText").value.toUpperCase();
   // mesmo pedido/coleta salvo de novo substitui o anterior
@@ -1616,7 +1661,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   const nome = document.getElementById("rNome").value.trim() || "Paciente sem nome";
   const leito = document.getElementById("rLeito").value.trim() || "—";
   const atend = document.getElementById("rAtend").value.trim();
-  const patientId = atend ? ("atd_" + atend) : ("nm_" + nome.replace(/\s+/g,"_"));
+  const patientId = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), atend, nome);
 
   let history = await storeGet("hist_" + patientId);
   history = history ? JSON.parse(history) : [];
@@ -1628,7 +1673,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   if(!index.find(p=>p.id===patientId)){
     index.push({id:patientId, nome, leito, atend});
   } else {
-    index = index.map(p=> p.id===patientId ? {...p, nome, leito, atend} : p);
+    index = index.map(p=> p.id===patientId ? {...p, nome, leito, atend: atend || p.atend} : p);
   }
   garantirCodigos(index);
   await storeSet("index_pacientes", JSON.stringify(index));
@@ -1731,7 +1776,7 @@ function getAlerts(r){
 // Minimal inline SVG sparkline. values: array of numbers or null (gaps allowed).
 function sparklineSVG(values, opts={}){
   const w = opts.width || 170, h = opts.height || 54, pad = 6;
-  const color = opts.color || "#1565A3";
+  const color = opts.color || "#3C8DD0";
   const pts = values.map((v,i)=>({v, i})).filter(o => o.v !== null && o.v !== undefined && !isNaN(o.v));
   if(pts.length === 0){
     return `<div style="font-size:11px; color:var(--muted); width:${w}px;">sem dados suficientes</div>`;
@@ -1778,11 +1823,11 @@ function buildTrendSection(history){
     <div class="trend-section">
       <div class="trend-title">Evolução entre plantões (${labels[0]} → ${labels[labels.length-1]})</div>
       <div class="trend-grid">
-        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#1565A3"})}</div>
-        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#C0392B"})}</div>
-        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#0E7C9A"})}</div>
-        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#2E8B57"})}</div>
-        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#B26A00"})}</div>
+        <div class="mini-chart"><div class="mini-label">Balanço hídrico (mL)</div>${sparklineSVG(balancoVals,{color:"#3C8DD0"})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM mín (mmHg)</div>${sparklineSVG(pamMinVals,{color:"#E0564A"})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 mín (%)</div>${sparklineSVG(satMinVals,{color:"#23A3BF"})}</div>
+        <div class="mini-chart"><div class="mini-label">FC máx (bpm)</div>${sparklineSVG(fcMaxVals,{color:"#3BA776"})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp máx (°C)</div>${sparklineSVG(tempMaxVals,{color:"#D08A1E"})}</div>
       </div>
     </div>
   `;
@@ -1806,11 +1851,11 @@ function buildIntradaySection(record){
     <div class="trend-section">
       <div class="trend-title">Tendência no dia (por horário registrado no PDF)</div>
       <div class="trend-grid">
-        <div class="mini-chart"><div class="mini-label">FC (bpm)</div>${sparklineSVG(seriesToHourArray(s.fc),{color:"#2E8B57",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">PAM (mmHg)</div>${sparklineSVG(seriesToHourArray(s.pam),{color:"#C0392B",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">SatO2 (%)</div>${sparklineSVG(seriesToHourArray(s.sat),{color:"#0E7C9A",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">Temp (°C)</div>${sparklineSVG(seriesToHourArray(s.temp),{color:"#B26A00",width:220})}</div>
-        <div class="mini-chart"><div class="mini-label">Glicemia (mg/dL)</div>${sparklineSVG(seriesToHourArray(s.glic),{color:"#6B5CA5",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">FC (bpm)</div>${sparklineSVG(seriesToHourArray(s.fc),{color:"#3BA776",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">PAM (mmHg)</div>${sparklineSVG(seriesToHourArray(s.pam),{color:"#E0564A",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">SatO2 (%)</div>${sparklineSVG(seriesToHourArray(s.sat),{color:"#23A3BF",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Temp (°C)</div>${sparklineSVG(seriesToHourArray(s.temp),{color:"#D08A1E",width:220})}</div>
+        <div class="mini-chart"><div class="mini-label">Glicemia (mg/dL)</div>${sparklineSVG(seriesToHourArray(s.glic),{color:"#8C7FD0",width:220})}</div>
       </div>
     </div>
   `;
@@ -1886,34 +1931,34 @@ function buildDualAxisSVG(record){
     return {path, circles, last: pts[pts.length-1]};
   }
 
-  const pamLine = pathFor(pamSeries, yPam, "value", "#C0392B");
-  const balLine = pathFor(vaso.balancoIntervalo||[], yBal, "value", "#1565A3");
-  const noraLine = pathFor(vaso.doseSeries||[], yNora, "dose", "#7A4EAB");
-  const diureseLine = pathFor(vaso.diureseRel||[], yDiu, "mlkgh", "#6B5CA5");
+  const pamLine = pathFor(pamSeries, yPam, "value", "#E0564A");
+  const balLine = pathFor(vaso.balancoIntervalo||[], yBal, "value", "#3C8DD0");
+  const noraLine = pathFor(vaso.doseSeries||[], yNora, "dose", "#9B6FCF");
+  const diureseLine = pathFor(vaso.diureseRel||[], yDiu, "mlkgh", "#8C7FD0");
 
   const pamTicks = [pamMin, (pamMin+pamMax)/2, pamMax];
   const balTicks = [balMin, (balMin+balMax)/2, balMax];
-  const leftTicks = pamTicks.map(v=>`<text x="${padL-6}" y="${(yPam(v)+3).toFixed(1)}" font-size="9" fill="#C0392B" text-anchor="end">${Math.round(v)}</text>`).join("");
-  const rightTicks = balTicks.map(v=>`<text x="${w-padR+6}" y="${(yBal(v)+3).toFixed(1)}" font-size="9" fill="#1565A3" text-anchor="start">${Math.round(v)}</text>`).join("");
+  const leftTicks = pamTicks.map(v=>`<text x="${padL-6}" y="${(yPam(v)+3).toFixed(1)}" font-size="9" fill="#E0564A" text-anchor="end">${Math.round(v)}</text>`).join("");
+  const rightTicks = balTicks.map(v=>`<text x="${w-padR+6}" y="${(yBal(v)+3).toFixed(1)}" font-size="9" fill="#3C8DD0" text-anchor="start">${Math.round(v)}</text>`).join("");
   let xTicks = "";
   for(let i=0;i<24;i+=4){
-    xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#5B6B75" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
+    xTicks += `<text x="${xOf(i).toFixed(1)}" y="${h-6}" font-size="9" fill="#8A9AA5" text-anchor="middle">${HOURS_ORDER[i]}</text>`;
   }
 
   return `<svg width="${w}" height="${h}" style="max-width:100%;">
     ${bands}
-    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
-    <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
-    <line x1="${padL}" y1="${padT+plotH}" x2="${w-padR}" y2="${padT+plotH}" stroke="#C9D5DC"></line>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#7F8F99" stroke-opacity="0.45"></line>
+    <line x1="${w-padR}" y1="${padT}" x2="${w-padR}" y2="${padT+plotH}" stroke="#7F8F99" stroke-opacity="0.45"></line>
+    <line x1="${padL}" y1="${padT+plotH}" x2="${w-padR}" y2="${padT+plotH}" stroke="#7F8F99" stroke-opacity="0.45"></line>
     ${leftTicks}${rightTicks}${xTicks}
-    <path d="${pamLine.path}" fill="none" stroke="#C0392B" stroke-width="2"></path>${pamLine.circles}
-    <path d="${balLine.path}" fill="none" stroke="#1565A3" stroke-width="2"></path>${balLine.circles}
-    <path d="${noraLine.path}" fill="none" stroke="#7A4EAB" stroke-width="2" stroke-dasharray="4,2"></path>${noraLine.circles}
-    <path d="${diureseLine.path}" fill="none" stroke="#6B5CA5" stroke-width="2" stroke-dasharray="4,2"></path>${diureseLine.circles}
-    ${pamLine.last ? `<text x="${(xOf(pamLine.last.idx)+4).toFixed(1)}" y="${(yPam(pamLine.last.v)-4).toFixed(1)}" font-size="9" fill="#C0392B">PAM ${pamLine.last.v}</text>` : ""}
-    ${balLine.last ? `<text x="${(xOf(balLine.last.idx)+4).toFixed(1)}" y="${(yBal(balLine.last.v)-4).toFixed(1)}" font-size="9" fill="#1565A3">Bal ${balLine.last.v.toFixed(0)}mL</text>` : ""}
-    ${noraLine.last ? `<text x="${(xOf(noraLine.last.idx)+4).toFixed(1)}" y="${(yNora(noraLine.last.v)+12).toFixed(1)}" font-size="9" fill="#7A4EAB">Nora ${noraLine.last.v.toFixed(3)}mcg/kg/min</text>` : ""}
-    ${diureseLine.last ? `<text x="${(xOf(diureseLine.last.idx)+4).toFixed(1)}" y="${(yDiu(diureseLine.last.v)+12).toFixed(1)}" font-size="9" fill="#6B5CA5">DU ${diureseLine.last.v.toFixed(2)}mL/kg/h</text>` : ""}
+    <path d="${pamLine.path}" fill="none" stroke="#E0564A" stroke-width="2"></path>${pamLine.circles}
+    <path d="${balLine.path}" fill="none" stroke="#3C8DD0" stroke-width="2"></path>${balLine.circles}
+    <path d="${noraLine.path}" fill="none" stroke="#9B6FCF" stroke-width="2" stroke-dasharray="4,2"></path>${noraLine.circles}
+    <path d="${diureseLine.path}" fill="none" stroke="#8C7FD0" stroke-width="2" stroke-dasharray="4,2"></path>${diureseLine.circles}
+    ${pamLine.last ? `<text x="${(xOf(pamLine.last.idx)+4).toFixed(1)}" y="${(yPam(pamLine.last.v)-4).toFixed(1)}" font-size="9" fill="#E0564A">PAM ${pamLine.last.v}</text>` : ""}
+    ${balLine.last ? `<text x="${(xOf(balLine.last.idx)+4).toFixed(1)}" y="${(yBal(balLine.last.v)-4).toFixed(1)}" font-size="9" fill="#3C8DD0">Bal ${balLine.last.v.toFixed(0)}mL</text>` : ""}
+    ${noraLine.last ? `<text x="${(xOf(noraLine.last.idx)+4).toFixed(1)}" y="${(yNora(noraLine.last.v)+12).toFixed(1)}" font-size="9" fill="#9B6FCF">Nora ${noraLine.last.v.toFixed(3)}mcg/kg/min</text>` : ""}
+    ${diureseLine.last ? `<text x="${(xOf(diureseLine.last.idx)+4).toFixed(1)}" y="${(yDiu(diureseLine.last.v)+12).toFixed(1)}" font-size="9" fill="#8C7FD0">DU ${diureseLine.last.v.toFixed(2)}mL/kg/h</text>` : ""}
   </svg>`;
 }
 
@@ -2311,45 +2356,61 @@ document.getElementById("clearDayBtn").addEventListener("click", async ()=>{
 // ---------- Relatório da UTI (todos os pacientes) ----------
 // Por paciente: último balanço (PAM, diurese, drenos, HD, balanço) e exames dos
 // últimos 4 dias. Ordenado por leito.
+// Colunas fixas de exames (iguais para todos os pacientes, para os blocos ficarem uniformes).
+const UNIT_EX_KEYS = ["HB","LEUCO","PLAQ","UR","CR","NA","K","MG","CAI","BT","INR","PCR","LAC"];
+const UNIT_PER_PAGE = 5;
 function buildUnitReport(rows){
   const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const leitoKey = l => { const n = parseInt(String(l).replace(/\D/g,"")); return isNaN(n) ? 9999 : n; };
   rows.sort((a,b)=> leitoKey(a.p.leito) - leitoKey(b.p.leito));
-  const body = rows.map(({p, history, exams})=>{
+
+  // Mesmos 4 dias para todos: os 4 dias que terminam no exame mais recente da unidade.
+  const series = rows.map(r => examSeries(r.exams));
+  let lastDay = null;
+  series.forEach(se => Object.values(se).forEach(arr => arr.forEach(x => { if(!lastDay || coletaKey(x.date) > coletaKey(lastDay)) lastDay = x.date; })));
+  const days = [];
+  if(lastDay){ const d0 = dateBR(lastDay); for(let i=3;i>=0;i--){ const d = new Date(d0); d.setDate(d.getDate()-i); days.push(d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit",year:"numeric"})); } }
+
+  const block = ({p, history, exams}, i) => {
     const r = history[history.length-1];
-    let ctrl = `<div class="unit-ctrl"><span>Sem balanço salvo.</span></div>`;
-    if(r){
-      const items = [
-        ["Balanço de", esc(r.dataBal || "—")],
-        ["PAM", r.pam && r.pam.min !== "" && r.pam.min != null ? `${r.pam.min}–${r.pam.max} mmHg` : "—"],
-        ["Diurese", r.diurese !== "" && r.diurese != null ? `${Math.abs(r.diurese)} mL` : "—"]
-      ];
-      (r.drenos||[]).forEach(d=> items.push([esc(d.label), `${d.total} mL`]));
-      if(r.hd !== "" && r.hd != null) items.push(["Hemodiálise (UF)", `${r.hd} mL`]);
-      items.push(["Balanço", `${r.balanco >= 0 ? "+" : ""}${r.balanco} mL`]);
-      ctrl = `<div class="unit-ctrl">${items.map(([k,v])=>`<span><b>${k}</b>${v}</span>`).join("")}</div>`;
-    }
-    let exHtml = "";
-    if(exams.length){
-      const series = examSeries(exams);
-      const allDays = [...new Set([].concat(...Object.values(series).map(s=>s.map(x=>x.date))))].sort((a,b)=>coletaKey(a).localeCompare(coletaKey(b)));
-      const lastDay = allDays[allDays.length-1];
-      const days = allDays.filter(d => { const dd = dayDiff(lastDay, d); return dd != null && dd >= 0 && dd <= 3; });
-      const keys = EXAM_KEY_ORDER.filter(k => series[k] && series[k].some(x=>days.includes(x.date)));
-      if(keys.length){
-        // Dias nas linhas, exames nas colunas (blocos de 11) — compacto para várias folhas.
-        const pk = keys.filter(k => k !== "BAST");
-        const chunks = []; for(let i=0;i<pk.length;i+=11) chunks.push(pk.slice(i,i+11));
-        exHtml = chunks.map(ch=>`<table class="unit-ex" style="margin-bottom:3px;"><tr><th></th>${ch.map(k=>`<th>${k}</th>`).join("")}</tr>
-          ${days.map(d=>`<tr><td>${d.slice(0,5)}</td>${ch.map(k=>{ const v = series[k].find(x=>x.date===d); if(!v) return "<td></td>"; const lvl = examLevel(k, v.num); return `<td class="${lvl||""}">${esc(v.value)}${lvl==="crit"?" !":""}</td>`; }).join("")}</tr>`).join("")}
-        </table>`).join("");
-        const al = examAlerts(exams).filter(a=>a.level === "crit");
-        if(al.length) exHtml += `<div style="font-size:10.5px; margin-top:3px;"><b>Crítico:</b> ${al.map(a=>esc(a.text)).join(" · ")}</div>`;
-      }
-    }
-    return `<div class="unit-pt"><h3>Leito ${esc(p.leito || "—")} — ${esc(p.nome)} <span>${p.atend ? "· Atend. " + esc(p.atend) : ""}</span></h3>${ctrl}${exHtml}</div>`;
-  }).join("");
-  return `<div class="print-header"><h1>Relatório da UTI</h1><div class="meta">${fmtTs(new Date().toISOString())} · ${rows.length} paciente(s) · negrito = alterado, "!" = crítico</div></div>${body}`;
+    const se = series[i];
+    const f = v => v === "" || v == null ? "—" : v;
+    const pam = r && r.pam && r.pam.min !== "" && r.pam.min != null ? `${r.pam.min}–${r.pam.max} mmHg` : "—";
+    const dren = r && (r.drenos||[]).length ? r.drenos.map(d=>`${esc(d.label)} ${d.total}`).join(", ") + " mL" : "—";
+    const ctrl = r ? `
+      <tr><td>PAM</td><td>${pam}</td></tr>
+      <tr><td>Diurese</td><td>${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) + " mL" : "—"}</td></tr>
+      <tr><td>Drenos</td><td class="wrap">${dren}</td></tr>
+      <tr><td>Hemodiálise</td><td>${r.hd !== "" && r.hd != null ? r.hd + " mL" : "—"}</td></tr>
+      <tr><td>Balanço</td><td class="big">${r.balanco >= 0 ? "+" : ""}${r.balanco} mL</td></tr>`
+      : `<tr><td colspan="2">Sem balanço salvo</td></tr>`;
+    const exRows = days.map(d => `<tr><td>${d.slice(0,5)}</td>${UNIT_EX_KEYS.map(k => {
+        const v = (se[k]||[]).find(x=>x.date === d);
+        if(!v) return "<td></td>";
+        const lvl = examLevel(k, v.num);
+        const val = k === "PLAQ" ? Math.round(v.num/1000) + "k" : k === "LEUCO" ? (v.num/1000).toFixed(1).replace(".",",") + "k" : esc(v.value);
+        return `<td class="${lvl||""}">${val}${lvl==="crit"?"!":""}</td>`;
+      }).join("")}</tr>`).join("");
+    const crit = exams.length ? examAlerts(exams).filter(a=>a.level==="crit").map(a=>esc(a.text)) : [];
+    return `<div class="u-blk">
+      <div class="u-head"><span class="u-leito">${esc(p.leito || "—")}</span><span class="u-nome">${esc(p.nome)}</span>
+        <span class="u-meta">${p.atend ? "Atend. " + esc(p.atend) + " — " : ""}${r ? "balanço de " + esc(r.dataBal) : ""}</span></div>
+      <div class="u-body">
+        <table class="u-ctrl"><colgroup><col style="width:19mm"><col></colgroup>${ctrl}</table>
+        ${days.length ? `<table class="u-ex"><colgroup><col style="width:9mm">${UNIT_EX_KEYS.map(()=>"<col>").join("")}</colgroup><tr><th></th>${UNIT_EX_KEYS.map(k=>`<th>${k}</th>`).join("")}</tr>${exRows}</table>` : `<div style="font-size:8pt; color:#666;">Sem exames salvos.</div>`}
+      </div>
+      <div class="u-crit">${crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""}</div>
+    </div>`;
+  };
+
+  const blocks = rows.map(block);
+  const pages = [];
+  for(let i=0;i<blocks.length;i+=UNIT_PER_PAGE) pages.push(blocks.slice(i, i+UNIT_PER_PAGE));
+  const quando = fmtTs(new Date().toISOString());
+  return pages.map((pg, n) => `<div class="u-page">
+      <div class="u-pagehead"><span><b>Relatório da UTI</b> — ${quando}</span><span>Negrito = alterado, ! = crítico. Plaquetas e leucócitos em mil (k).</span><span>Folha ${n+1}/${pages.length}</span></div>
+      ${pg.join("")}
+    </div>`).join("");
 }
 document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
   const index = JSON.parse(await storeGet("index_pacientes") || "[]");
@@ -2363,6 +2424,20 @@ document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
   window.print();
 });
 
+// Tema: noite por padrão; a escolha fica salva neste computador.
+(function(){
+  let t = "night"; try{ t = localStorage.getItem(STORAGE_PREFIX + "tema") || "night"; }catch(e){}
+  const apply = th => {
+    document.documentElement.setAttribute("data-theme", th);
+    document.getElementById("themeBtn").textContent = th === "night" ? "☀ Modo dia" : "☾ Modo noite";
+    try{ localStorage.setItem(STORAGE_PREFIX + "tema", th); }catch(e){}
+  };
+  apply(t);
+  document.getElementById("themeBtn").addEventListener("click", ()=>{
+    apply(document.documentElement.getAttribute("data-theme") === "night" ? "day" : "night");
+    renderPatients();   // gráficos usam cores do tema
+  });
+})();
 document.getElementById("hojeData").textContent = new Date().toLocaleDateString("pt-BR", {weekday:"long", day:"numeric", month:"long"});
 migrarLogAntigo().then(renderPatients).then(()=>{
   const note = document.getElementById("persistNote");
