@@ -307,9 +307,9 @@
 
 <section class="card">
   <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Escolher PDF do balanço ou dos exames">
-    <strong>Solte o PDF aqui</strong>
-    ou clique para escolher o arquivo
-    <input type="file" id="fileInput" accept="application/pdf">
+    <strong>Solte os PDFs aqui</strong>
+    ou clique para escolher (pode selecionar vários de uma vez)
+    <input type="file" id="fileInput" accept="application/pdf" multiple>
   </div>
   <div id="status" role="status" aria-live="polite"></div>
 </section>
@@ -933,17 +933,30 @@ dropzone.addEventListener("dragover", e=>{ e.preventDefault(); dropzone.classLis
 dropzone.addEventListener("dragleave", ()=> dropzone.classList.remove("drag"));
 dropzone.addEventListener("drop", e=>{
   e.preventDefault(); dropzone.classList.remove("drag");
-  if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  enqueueMany(e.dataTransfer.files);
 });
 fileInput.addEventListener("change", e=>{
-  if(e.target.files.length) handleFile(e.target.files[0]);
+  enqueueMany(e.target.files);
 });
 
+// Vários PDFs de uma vez (seleção múltipla ou arrastar vários): o primeiro abre
+// para conferência e os demais entram na fila, na ordem em que vieram.
+function enqueueMany(fileList){
+  const files = Array.from(fileList || []).filter(f => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+  if(!files.length){ statusEl.textContent = "Nenhum PDF entre os arquivos escolhidos."; statusEl.className = "err"; return; }
+  files.forEach(f => enqueuePdf(f));
+  if(files.length > 1){ statusEl.textContent = `${files.length} PDFs recebidos. Confira e salve um por vez; os próximos abrem em seguida.`; statusEl.className = "ok"; }
+  fileInput.value = "";
+}
+
+// "Ocupado" desde o início da leitura até salvar/descartar: garante um PDF por vez.
+let reviewBusy = false;
 function enqueuePdf(file){
-  if(reviewCard.style.display === "block" || document.getElementById("examCard").style.display === "block"){
+  if(reviewBusy || reviewCard.style.display === "block" || document.getElementById("examCard").style.display === "block"){
     pdfQueue.push(file);
     updateQueueNote();
   } else {
+    reviewBusy = true;
     handleFile(file);
   }
 }
@@ -1542,8 +1555,9 @@ function updateQueueNote(){
   el.textContent = pdfQueue.length ? `Mais ${pdfQueue.length} PDF(s) na fila. Aparecem quando você salvar ou descartar este.` : "";
 }
 function nextInQueue(){
+  reviewBusy = false;
   updateQueueNote();
-  if(pdfQueue.length){ const f = pdfQueue.shift(); updateQueueNote(); handleFile(f); }
+  if(pdfQueue.length){ const f = pdfQueue.shift(); reviewBusy = true; updateQueueNote(); handleFile(f); }
 }
 
 let lastParsedSeries = null;
@@ -1623,6 +1637,7 @@ async function fillReview(d){
   document.getElementById("rNoraMg").value = lastSettings.noraMg ?? "";
   document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
   renderReviewSummary();
+  updateQueueNote();
   reviewCard.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
