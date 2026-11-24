@@ -123,6 +123,16 @@
     .print-stat-grid .k{ color:#555; font-size:10px; text-transform:uppercase; display:block; }
     .print-trend-grid{ display:flex; flex-wrap:wrap; gap:16px; }
     .print-trend-grid .mini-label{ font-size:10px; color:#555; margin-bottom:2px; }
+    .unit-pt{ border-top:1.5px solid #111; padding:6px 0 8px; page-break-inside:avoid; }
+    .unit-pt h3{ font-size:13px; margin:0 0 4px; }
+    .unit-pt h3 span{ font-weight:normal; color:#444; font-size:11px; }
+    .unit-ctrl{ display:flex; flex-wrap:wrap; gap:4px 18px; font-size:11.5px; margin-bottom:5px; }
+    .unit-ctrl b{ font-size:9.5px; color:#555; text-transform:uppercase; margin-right:3px; }
+    table.unit-ex{ border-collapse:collapse; font-size:10px; }
+    table.unit-ex th, table.unit-ex td{ border:1px solid #bbb; padding:1px 5px; text-align:right; min-width:34px; }
+    table.unit-ex th:first-child, table.unit-ex td:first-child{ text-align:left; font-weight:bold; }
+    table.unit-ex td.crit{ font-weight:bold; text-decoration:underline; }
+    table.unit-ex td.warn{ font-weight:bold; }
   }
 </style>
 <div id="printArea"></div>
@@ -221,6 +231,22 @@
   <h2>Pacientes</h2>
   <div id="patients"></div>
   <div id="emptyMsg" style="color:var(--muted); font-size:13px;">Nenhum registro salvo ainda.</div>
+</div>
+
+<div class="card" id="shiftCard">
+  <h2>Plantão</h2>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <button id="printUnitBtn">🖨 Imprimir relatório da UTI</button>
+    <button id="logBtn">📋 Log da sessão</button>
+    <button class="danger" id="clearDayBtn" style="margin-left:auto;">🗑 Apagar controles do dia</button>
+  </div>
+  <div id="logPanel" style="display:none; margin-top:12px;">
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+      <span style="font-size:12px; color:var(--muted);">Registro anonimizado (leito + iniciais). Não é apagado junto com os controles.</span>
+      <button id="logExportBtn" style="margin-left:auto;">Exportar CSV</button>
+    </div>
+    <div id="logList" style="max-height:320px; overflow:auto; font-size:11.5px; font-family:ui-monospace,Consolas,monospace;"></div>
+  </div>
 </div>
 
 <footer id="persistNote"></footer>
@@ -1112,6 +1138,8 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
     index.push({id:patientId, nome, leito:"—", atend: ex.atend || ""});
     await storeSet("index_pacientes", JSON.stringify(index));
   }
+  const pIdx = index.find(p=>p.id===patientId);
+  await logEvent("exames salvos", nome, pIdx ? pIdx.leito : "—", `coleta ${ex.coleta}\n` + text.split("\n").slice(1).join("\n"));
   statusEl.textContent = "Exames salvos no histórico de " + nome + ".";
   statusEl.className = "ok";
   closeExamReview();
@@ -1453,6 +1481,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
     await storeSet("index_pacientes", JSON.stringify(index));
   }
 
+  await logEvent("balanço salvo", nome, leito, logResumoBalanco(record));
   reviewCard.style.display = "none";
   fileInput.value = "";
   statusEl.textContent = "Registro salvo no histórico de " + nome + ".";
@@ -1939,8 +1968,13 @@ async function renderPatients(){
     btn.addEventListener("click", async ()=>{
       const id = btn.dataset.id;
       let index = JSON.parse(await storeGet("index_pacientes") || "[]");
+      const pDel = index.find(p=>p.id===id);
+      if(!confirm(`Excluir ${pDel ? pDel.nome : "este paciente"} e todos os seus balanços e exames?`)) return;
       index = index.filter(p=>p.id!==id);
       await storeSet("index_pacientes", JSON.stringify(index));
+      localStorage.removeItem(STORAGE_PREFIX + "hist_" + id);
+      localStorage.removeItem(STORAGE_PREFIX + "exam_" + id);
+      await logEvent("paciente excluído", pDel ? pDel.nome : null, pDel ? pDel.leito : null, "");
       renderPatients();
     });
   });
@@ -1990,6 +2024,152 @@ async function renderPatients(){
     });
   });
 }
+
+// ---------- Log da sessão (anonimizado: só leito + iniciais) ----------
+// Guarda o que foi registrado no plantão sem nome, atendimento ou nome da mãe.
+// Não é apagado por "Apagar controles do dia". Mantém até 180 dias / 3000 eventos.
+const LOG_KEY = "log_sessao", LOG_MAX = 3000, LOG_DAYS = 180;
+function iniciais(nome){
+  const stop = ["DE","DA","DO","DAS","DOS","E","DI","DU"];
+  const w = norm(nome || "").replace(/[^A-Z\s]/g," ").split(/\s+/).filter(x=>x && !stop.includes(x));
+  return w.length ? w.map(x=>x[0]).join(".") + "." : "—";
+}
+async function logEvent(acao, nome, leito, detalhes){
+  try{
+    let log = JSON.parse(await storeGet(LOG_KEY) || "[]");
+    const cutoff = Date.now() - LOG_DAYS*86400000;
+    log = log.filter(e => new Date(e.ts).getTime() >= cutoff);
+    log.push({ts: new Date().toISOString(), acao, leito: leito || "—", ini: nome ? iniciais(nome) : "—", det: detalhes || ""});
+    if(log.length > LOG_MAX) log = log.slice(-LOG_MAX);
+    await storeSet(LOG_KEY, JSON.stringify(log));
+    if(document.getElementById("logPanel").style.display === "block") renderLog();
+  }catch(e){}
+}
+// Resumo anonimizado dos controles de um balanço (sem nome/atendimento).
+function logResumoBalanco(r){
+  const f = (o, u) => (o && o.min !== "" && o.min != null) ? `${o.min}-${o.max}${u}` : "—";
+  const parts = [`bal ${r.dataBal || "?"}`, `PAM ${f(r.pam,"")}`, `diurese ${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) : "—"}mL`];
+  (r.drenos||[]).forEach(d=> parts.push(`${d.label} ${d.total}mL`));
+  if(r.hd !== "" && r.hd != null) parts.push(`HD ${r.hd}mL`);
+  parts.push(`BH ${r.balanco >= 0 ? "+" : ""}${r.balanco}mL`);
+  parts.push(`FC ${f(r.fc,"")} FR ${f(r.fr,"")} Sat ${f(r.sat,"%")} T ${f(r.temp,"")}`);
+  return parts.join(" | ");
+}
+function fmtTs(iso){
+  const d = new Date(iso), z = n => String(n).padStart(2,"0");
+  return `${z(d.getDate())}/${z(d.getMonth()+1)}/${d.getFullYear()} ${z(d.getHours())}:${z(d.getMinutes())}`;
+}
+async function renderLog(){
+  const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
+  const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  document.getElementById("logList").innerHTML = log.length
+    ? log.slice(-80).reverse().map(e=>`<div style="padding:3px 0; border-bottom:1px solid var(--line);"><b>${fmtTs(e.ts)}</b> · ${esc(e.acao)} · leito ${esc(e.leito)} · ${esc(e.ini)}${e.det ? `<br><span style="color:var(--muted);">${esc(e.det).replace(/\n/g,"<br>")}</span>` : ""}</div>`).join("")
+      + (log.length > 80 ? `<div style="color:var(--muted); padding-top:4px;">… ${log.length - 80} eventos anteriores no CSV.</div>` : "")
+    : `<div style="color:var(--muted);">Nenhum evento registrado ainda.</div>`;
+}
+document.getElementById("logBtn").addEventListener("click", ()=>{
+  const p = document.getElementById("logPanel");
+  p.style.display = p.style.display === "block" ? "none" : "block";
+  if(p.style.display === "block") renderLog();
+});
+document.getElementById("logExportBtn").addEventListener("click", async ()=>{
+  const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
+  const q = v => '"' + String(v == null ? "" : v).replace(/"/g,'""').replace(/\r?\n/g," / ") + '"';
+  const csv = "\ufeff" + ["data_hora;acao;leito;iniciais;detalhes"].concat(log.map(e=>[fmtTs(e.ts), e.acao, e.leito, e.ini, e.det].map(q).join(";"))).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
+  const d = new Date(), z = n => String(n).padStart(2,"0");
+  a.download = `log_balanco_uti_${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+
+// ---------- Apagar controles do dia ----------
+// Remove balanços e exames SALVOS HOJE (data deste computador). Pacientes que
+// ficarem sem nenhum dado saem da lista. Dias anteriores e o log são mantidos.
+const isToday = iso => { if(!iso) return false; const d = new Date(iso); return d.toDateString() === new Date().toDateString(); };
+document.getElementById("clearDayBtn").addEventListener("click", async ()=>{
+  const index = JSON.parse(await storeGet("index_pacientes") || "[]");
+  let nBal = 0, nEx = 0;
+  const plan = [];
+  for(const p of index){
+    const hist = JSON.parse(await storeGet("hist_" + p.id) || "[]");
+    const ex = JSON.parse(await storeGet("exam_" + p.id) || "[]");
+    const h2 = hist.filter(r => !isToday(r.savedAt)), e2 = ex.filter(r => !isToday(r.savedAt));
+    nBal += hist.length - h2.length; nEx += ex.length - e2.length;
+    plan.push({p, h2, e2, changed: h2.length !== hist.length || e2.length !== ex.length});
+  }
+  const hoje = new Date().toLocaleDateString("pt-BR");
+  if(!nBal && !nEx){ alert(`Nenhum controle salvo hoje (${hoje}) para apagar.`); return; }
+  const ok = confirm(`Apagar os controles salvos HOJE (${hoje})?\n\n• ${nBal} balanço(s)\n• ${nEx} registro(s) de exames\n\nDias anteriores e o log anonimizado são mantidos.\nEsta ação NÃO pode ser desfeita.`);
+  if(!ok) return;
+  const keep = [];
+  for(const x of plan){
+    if(!x.changed){ keep.push(x.p); continue; }
+    if(x.h2.length) await storeSet("hist_" + x.p.id, JSON.stringify(x.h2)); else localStorage.removeItem(STORAGE_PREFIX + "hist_" + x.p.id);
+    if(x.e2.length) await storeSet("exam_" + x.p.id, JSON.stringify(x.e2)); else localStorage.removeItem(STORAGE_PREFIX + "exam_" + x.p.id);
+    if(x.h2.length || x.e2.length) keep.push(x.p);
+  }
+  await storeSet("index_pacientes", JSON.stringify(keep));
+  await logEvent("controles do dia apagados", null, null, `${nBal} balanço(s), ${nEx} exame(s) de ${hoje}`);
+  statusEl.textContent = `Controles de hoje apagados: ${nBal} balanço(s) e ${nEx} exame(s).`;
+  statusEl.className = "ok";
+  renderPatients();
+});
+
+// ---------- Relatório da UTI (todos os pacientes) ----------
+// Por paciente: último balanço (PAM, diurese, drenos, HD, balanço) e exames dos
+// últimos 4 dias. Ordenado por leito.
+function buildUnitReport(rows){
+  const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const leitoKey = l => { const n = parseInt(String(l).replace(/\D/g,"")); return isNaN(n) ? 9999 : n; };
+  rows.sort((a,b)=> leitoKey(a.p.leito) - leitoKey(b.p.leito));
+  const body = rows.map(({p, history, exams})=>{
+    const r = history[history.length-1];
+    let ctrl = `<div class="unit-ctrl"><span>Sem balanço salvo.</span></div>`;
+    if(r){
+      const items = [
+        ["Balanço de", esc(r.dataBal || "—")],
+        ["PAM", r.pam && r.pam.min !== "" && r.pam.min != null ? `${r.pam.min}–${r.pam.max} mmHg` : "—"],
+        ["Diurese", r.diurese !== "" && r.diurese != null ? `${Math.abs(r.diurese)} mL` : "—"]
+      ];
+      (r.drenos||[]).forEach(d=> items.push([esc(d.label), `${d.total} mL`]));
+      if(r.hd !== "" && r.hd != null) items.push(["Hemodiálise (UF)", `${r.hd} mL`]);
+      items.push(["Balanço", `${r.balanco >= 0 ? "+" : ""}${r.balanco} mL`]);
+      ctrl = `<div class="unit-ctrl">${items.map(([k,v])=>`<span><b>${k}</b>${v}</span>`).join("")}</div>`;
+    }
+    let exHtml = "";
+    if(exams.length){
+      const series = examSeries(exams);
+      const allDays = [...new Set([].concat(...Object.values(series).map(s=>s.map(x=>x.date))))].sort((a,b)=>coletaKey(a).localeCompare(coletaKey(b)));
+      const lastDay = allDays[allDays.length-1];
+      const days = allDays.filter(d => { const dd = dayDiff(lastDay, d); return dd != null && dd >= 0 && dd <= 3; });
+      const keys = EXAM_KEY_ORDER.filter(k => series[k] && series[k].some(x=>days.includes(x.date)));
+      if(keys.length){
+        // Dias nas linhas, exames nas colunas (blocos de 11) — compacto para várias folhas.
+        const pk = keys.filter(k => k !== "BAST");
+        const chunks = []; for(let i=0;i<pk.length;i+=11) chunks.push(pk.slice(i,i+11));
+        exHtml = chunks.map(ch=>`<table class="unit-ex" style="margin-bottom:3px;"><tr><th></th>${ch.map(k=>`<th>${k}</th>`).join("")}</tr>
+          ${days.map(d=>`<tr><td>${d.slice(0,5)}</td>${ch.map(k=>{ const v = series[k].find(x=>x.date===d); if(!v) return "<td></td>"; const lvl = examLevel(k, v.num); return `<td class="${lvl||""}">${esc(v.value)}${lvl==="crit"?" !":""}</td>`; }).join("")}</tr>`).join("")}
+        </table>`).join("");
+        const al = examAlerts(exams).filter(a=>a.level === "crit");
+        if(al.length) exHtml += `<div style="font-size:10.5px; margin-top:3px;"><b>Crítico:</b> ${al.map(a=>esc(a.text)).join(" · ")}</div>`;
+      }
+    }
+    return `<div class="unit-pt"><h3>Leito ${esc(p.leito || "—")} — ${esc(p.nome)} <span>${p.atend ? "· Atend. " + esc(p.atend) : ""}</span></h3>${ctrl}${exHtml}</div>`;
+  }).join("");
+  return `<div class="print-header"><h1>Relatório da UTI</h1><div class="meta">${fmtTs(new Date().toISOString())} · ${rows.length} paciente(s) · negrito = alterado, "!" = crítico</div></div>${body}`;
+}
+document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
+  const index = JSON.parse(await storeGet("index_pacientes") || "[]");
+  const rows = [];
+  for(const p of index){
+    rows.push({p, history: JSON.parse(await storeGet("hist_" + p.id) || "[]"), exams: JSON.parse(await storeGet("exam_" + p.id) || "[]")});
+  }
+  if(!rows.length){ alert("Nenhum paciente salvo para imprimir."); return; }
+  document.getElementById("printArea").innerHTML = buildUnitReport(rows);
+  await logEvent("relatório da UTI impresso", null, null, `${rows.length} paciente(s)`);
+  window.print();
+});
 
 renderPatients().then(()=>{
   const note = document.getElementById("persistNote");
