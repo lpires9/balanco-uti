@@ -152,6 +152,7 @@
   <div id="watchBox" style="display:none; margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:12px;">
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <button id="watchBtn">📁 Monitorar pasta de Downloads</button>
+      <label style="display:flex; gap:4px; align-items:center; white-space:nowrap;"><input type="checkbox" id="watchDelete" checked> apagar o PDF da pasta depois de ler</label>
       <span id="watchStatus" style="color:var(--muted);">Escolha a pasta onde o navegador salva os PDFs. Depois, no PDF do MV, aperte <b>Ctrl+S</b> e <b>Enter</b>: o balanço entra aqui sozinho.</span>
     </div>
   </div>
@@ -242,7 +243,7 @@
   </div>
   <div id="logPanel" style="display:none; margin-top:12px;">
     <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
-      <span style="font-size:12px; color:var(--muted);">Registro anonimizado (leito + iniciais). Não é apagado junto com os controles.</span>
+      <span style="font-size:12px; color:var(--muted);">Registro pseudonimizado (leito + código sorteado). O vínculo código ↔ paciente some na alta/exclusão. Não é apagado junto com os controles.</span>
       <button id="logExportBtn" style="margin-left:auto;">Exportar CSV</button>
     </div>
     <div id="logList" style="max-height:320px; overflow:auto; font-size:11.5px; font-family:ui-monospace,Consolas,monospace;"></div>
@@ -1136,10 +1137,11 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
   let index = JSON.parse(await storeGet("index_pacientes") || "[]");
   if(!index.find(p=>p.id===patientId)){
     index.push({id:patientId, nome, leito:"—", atend: ex.atend || ""});
-    await storeSet("index_pacientes", JSON.stringify(index));
   }
+  garantirCodigos(index);
+  await storeSet("index_pacientes", JSON.stringify(index));
   const pIdx = index.find(p=>p.id===patientId);
-  await logEvent("exames salvos", nome, pIdx ? pIdx.leito : "—", `coleta ${ex.coleta}\n` + text.split("\n").slice(1).join("\n"));
+  await logEvent("exames salvos", pIdx.cod, pIdx.leito, `coleta ${ex.coleta}\n` + text.split("\n").slice(1).join("\n"));
   statusEl.textContent = "Exames salvos no histórico de " + nome + ".";
   statusEl.className = "ok";
   closeExamReview();
@@ -1153,6 +1155,10 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
 // com um clique na próxima visita.
 const WATCH_INTERVAL_MS = 2000;
 let watchDir = null, watchTimer = null, watchSeen = new Map(), watchStart = 0, watchCount = 0;
+let watchCanDelete = false, watchDeleted = 0, watchDeleteErr = "";
+// Permissão de leitura+escrita (necessária para apagar o PDF depois de ler).
+// Chromium 86 aceita {mode:"readwrite"}; {writable:true} cobre a variante antiga.
+const RW = {mode:"readwrite", writable:true};
 
 function idbHandle(op, value){
   return new Promise((resolve)=>{
@@ -1199,16 +1205,31 @@ async function scanWatchDir(initial){
     watchSeen.set(key, sig);
     if(initial || prev === sig || f.size === 0) continue;
     if(f.lastModified < watchStart - 5000) continue;
-    const head = new Uint8Array(await f.slice(0,5).arrayBuffer());
+    // Copia o conteúdo para a memória ANTES de apagar: o File do disco deixa de
+    // ser legível quando o arquivo some da pasta.
+    let buf;
+    try{ buf = await f.arrayBuffer(); }catch(e){ continue; }
+    const head = new Uint8Array(buf.slice(0,5));
     if(String.fromCharCode(...head) !== "%PDF-") continue;
     watchCount++;
-    enqueuePdf(new File([f], f.name, {type:"application/pdf"}));
+    enqueuePdf(new File([buf], f.name, {type:"application/pdf"}));
+    if(document.getElementById("watchDelete").checked){
+      if(watchCanDelete){
+        try{ await watchDir.removeEntry(h.name); watchSeen.delete(key); watchDeleted++; }
+        catch(e){ watchDeleteErr = e.message || String(e); }
+      } else watchDeleteErr = "sem permissão de escrita na pasta";
+    }
   }
-  setWatchStatus(`🟢 Monitorando <b>${watchDir.name}</b> — ${watchCount} PDF(s) lido(s). No PDF do MV: <b>Ctrl+S</b> → <b>Enter</b>.`);
+  const delInfo = document.getElementById("watchDelete").checked
+    ? (watchDeleteErr ? ` · ⚠ não consegui apagar da pasta (${watchDeleteErr})` : ` · ${watchDeleted} apagado(s) da pasta`)
+    : "";
+  setWatchStatus(`🟢 Monitorando <b>${watchDir.name}</b> — ${watchCount} PDF(s) lido(s)${delInfo}. No PDF do MV: <b>Ctrl+S</b> → <b>Enter</b>.`);
 }
 
 async function startWatch(dir){
-  watchDir = dir; watchSeen = new Map(); watchStart = Date.now();
+  watchDir = dir; watchSeen = new Map(); watchStart = Date.now(); watchDeleted = 0; watchDeleteErr = "";
+  watchCanDelete = false;
+  try{ watchCanDelete = !!dir.removeEntry && (await dir.queryPermission(RW)) === "granted"; }catch(e){}
   await scanWatchDir(true);            // arquivos já existentes são ignorados
   clearInterval(watchTimer);
   watchTimer = setInterval(()=> scanWatchDir(false), WATCH_INTERVAL_MS);
@@ -1223,19 +1244,26 @@ function stopWatch(msg){
 (async function setupWatch(){
   if(!("showDirectoryPicker" in window)) return;   // navegador sem suporte: some a opção
   document.getElementById("watchBox").style.display = "block";
+  const delBox = document.getElementById("watchDelete");
+  delBox.checked = (await storeGet("watch_delete")) !== "0";
+  delBox.addEventListener("change", ()=> storeSet("watch_delete", delBox.checked ? "1" : "0"));
   const btn = document.getElementById("watchBtn");
   const saved = await idbHandle("get");
   if(saved){ btn.textContent = "📁 Retomar monitoramento (" + saved.name + ")"; }
   btn.addEventListener("click", async ()=>{
     if(watchTimer){ stopWatch(); return; }
     try{
+      const querApagar = document.getElementById("watchDelete").checked;
       let dir = await idbHandle("get");
       if(dir && dir.requestPermission){
-        const perm = await dir.requestPermission({mode:"read"});
+        let perm = "denied";
+        if(querApagar){ try{ perm = await dir.requestPermission(RW); }catch(e){} }
+        if(perm !== "granted") perm = await dir.requestPermission({mode:"read"});
         if(perm !== "granted") dir = null;
       } else dir = null;
       if(!dir){
         dir = await window.showDirectoryPicker();
+        if(querApagar){ try{ await dir.requestPermission(RW); }catch(e){} }
         await idbHandle("put", dir);
       }
       await startWatch(dir);
@@ -1475,13 +1503,14 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   index = index ? JSON.parse(index) : [];
   if(!index.find(p=>p.id===patientId)){
     index.push({id:patientId, nome, leito, atend});
-    await storeSet("index_pacientes", JSON.stringify(index));
   } else {
     index = index.map(p=> p.id===patientId ? {...p, nome, leito, atend} : p);
-    await storeSet("index_pacientes", JSON.stringify(index));
   }
+  garantirCodigos(index);
+  await storeSet("index_pacientes", JSON.stringify(index));
+  const codBal = index.find(p=>p.id===patientId).cod;
 
-  await logEvent("balanço salvo", nome, leito, logResumoBalanco(record));
+  await logEvent("balanço salvo", codBal, leito, logResumoBalanco(record));
   reviewCard.style.display = "none";
   fileInput.value = "";
   statusEl.textContent = "Registro salvo no histórico de " + nome + ".";
@@ -1896,11 +1925,18 @@ async function renderPatients(){
   index = index ? JSON.parse(index) : [];
   if(!index.length){ emptyMsg.style.display="block"; return; }
   emptyMsg.style.display="none";
+  if(garantirCodigos(index)) await storeSet("index_pacientes", JSON.stringify(index));
 
   for(const p of index){
     let history = await storeGet("hist_" + p.id);
     history = history ? JSON.parse(history) : [];
     const exams = JSON.parse(await storeGet("exam_" + p.id) || "[]");
+    // Sem nenhum registro novo há mais de 72h → sugerir alta (destrói o vínculo do código).
+    const lastSave = Math.max(0, ...history.map(r=>Date.parse(r.savedAt)||0), ...exams.map(e=>Date.parse(e.savedAt)||0));
+    const horasSem = lastSave ? (Date.now() - lastSave) / 3600000 : 0;
+    const staleHtml = horasSem > 72
+      ? `<div style="margin-top:6px; font-size:12px; color:var(--accent2);">⏳ Sem registros há ${Math.floor(horasSem/24)} dias — possível alta. Use <b>Alta</b> para remover os dados e o vínculo do código.</div>`
+      : "";
     const totalDiurese = history.reduce((a,r)=>a+(r.diurese||0),0);
     const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
 
@@ -1910,10 +1946,12 @@ async function renderPatients(){
       <div class="patient-head">
         <div>
           <div class="name">${p.nome}</div>
-          <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""}</div>
+          <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""} · Código no log: <b>${p.cod || "—"}</b></div>
+          ${staleHtml}
         </div>
         <div style="display:flex; gap:8px;">
           <button class="print-patient" data-id="${p.id}">Imprimir relatório</button>
+          <button class="alta-patient" data-id="${p.id}">Alta</button>
           <button class="danger del-patient" data-id="${p.id}">Excluir paciente</button>
         </div>
       </div>
@@ -1964,20 +2002,23 @@ async function renderPatients(){
     container.appendChild(block);
   }
 
-  container.querySelectorAll(".del-patient").forEach(btn=>{
-    btn.addEventListener("click", async ()=>{
-      const id = btn.dataset.id;
-      let index = JSON.parse(await storeGet("index_pacientes") || "[]");
-      const pDel = index.find(p=>p.id===id);
-      if(!confirm(`Excluir ${pDel ? pDel.nome : "este paciente"} e todos os seus balanços e exames?`)) return;
-      index = index.filter(p=>p.id!==id);
-      await storeSet("index_pacientes", JSON.stringify(index));
-      localStorage.removeItem(STORAGE_PREFIX + "hist_" + id);
-      localStorage.removeItem(STORAGE_PREFIX + "exam_" + id);
-      await logEvent("paciente excluído", pDel ? pDel.nome : null, pDel ? pDel.leito : null, "");
-      renderPatients();
-    });
-  });
+  // Alta e Excluir: apagam dados + código. O log fica só com o código, sem vínculo.
+  const removerPaciente = async (id, motivo) => {
+    let index = JSON.parse(await storeGet("index_pacientes") || "[]");
+    const pDel = index.find(p=>p.id===id);
+    const pergunta = motivo === "alta"
+      ? `Dar alta a ${pDel ? pDel.nome : "este paciente"}?\n\nOs balanços e exames dele serão apagados deste computador e o código ${pDel && pDel.cod ? pDel.cod : ""} deixa de ter vínculo com o paciente no log.`
+      : `Excluir ${pDel ? pDel.nome : "este paciente"} e todos os seus balanços e exames?`;
+    if(!confirm(pergunta)) return;
+    index = index.filter(p=>p.id!==id);
+    await storeSet("index_pacientes", JSON.stringify(index));
+    localStorage.removeItem(STORAGE_PREFIX + "hist_" + id);
+    localStorage.removeItem(STORAGE_PREFIX + "exam_" + id);
+    await logEvent(motivo === "alta" ? "alta — vínculo removido" : "paciente excluído — vínculo removido", pDel ? pDel.cod : null, pDel ? pDel.leito : null, "");
+    renderPatients();
+  };
+  container.querySelectorAll(".del-patient").forEach(btn=> btn.addEventListener("click", ()=> removerPaciente(btn.dataset.id, "exclusao")));
+  container.querySelectorAll(".alta-patient").forEach(btn=> btn.addEventListener("click", ()=> removerPaciente(btn.dataset.id, "alta")));
   container.querySelectorAll(".print-patient").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       const id = btn.dataset.id;
@@ -2029,17 +2070,32 @@ async function renderPatients(){
 // Guarda o que foi registrado no plantão sem nome, atendimento ou nome da mãe.
 // Não é apagado por "Apagar controles do dia". Mantém até 180 dias / 3000 eventos.
 const LOG_KEY = "log_sessao", LOG_MAX = 3000, LOG_DAYS = 180;
-function iniciais(nome){
-  const stop = ["DE","DA","DO","DAS","DOS","E","DI","DU"];
-  const w = norm(nome || "").replace(/[^A-Z\s]/g," ").split(/\s+/).filter(x=>x && !stop.includes(x));
-  return w.length ? w.map(x=>x[0]).join(".") + "." : "—";
+
+// Código do paciente no log: SORTEADO (não derivado de nome/atendimento), único
+// entre os pacientes ativos. A ligação código ↔ paciente existe só na lista de
+// pacientes (index_pacientes) e some quando o paciente é excluído/recebe alta.
+const COD_ALFABETO = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";   // sem 0/O, 1/I
+function novoCodigo(usados){
+  for(let t=0;t<1000;t++){
+    const r = new Uint32Array(4); (window.crypto || window.msCrypto).getRandomValues(r);
+    const c = "P-" + Array.from(r, x => COD_ALFABETO[x % COD_ALFABETO.length]).join("");
+    if(!usados.has(c)) return c;
+  }
+  return "P-" + Date.now().toString(36).toUpperCase().slice(-4);
 }
-async function logEvent(acao, nome, leito, detalhes){
+// Garante código em todos os pacientes (migra quem foi salvo antes desta versão).
+function garantirCodigos(index){
+  const usados = new Set(index.map(p=>p.cod).filter(Boolean));
+  let mudou = false;
+  index.forEach(p=>{ if(!p.cod){ p.cod = novoCodigo(usados); usados.add(p.cod); mudou = true; } });
+  return mudou;
+}
+async function logEvent(acao, cod, leito, detalhes){
   try{
     let log = JSON.parse(await storeGet(LOG_KEY) || "[]");
     const cutoff = Date.now() - LOG_DAYS*86400000;
     log = log.filter(e => new Date(e.ts).getTime() >= cutoff);
-    log.push({ts: new Date().toISOString(), acao, leito: leito || "—", ini: nome ? iniciais(nome) : "—", det: detalhes || ""});
+    log.push({ts: new Date().toISOString(), acao, leito: leito || "—", cod: cod || "—", det: detalhes || ""});
     if(log.length > LOG_MAX) log = log.slice(-LOG_MAX);
     await storeSet(LOG_KEY, JSON.stringify(log));
     if(document.getElementById("logPanel").style.display === "block") renderLog();
@@ -2059,11 +2115,18 @@ function fmtTs(iso){
   const d = new Date(iso), z = n => String(n).padStart(2,"0");
   return `${z(d.getDate())}/${z(d.getMonth()+1)}/${d.getFullYear()} ${z(d.getHours())}:${z(d.getMinutes())}`;
 }
+// Registros de versões anteriores tinham iniciais: troca por "(antigo)".
+async function migrarLogAntigo(){
+  const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
+  let mudou = false;
+  log.forEach(e=>{ if("ini" in e){ e.cod = (e.ini && e.ini !== "—") ? "(antigo)" : "—"; delete e.ini; mudou = true; } });
+  if(mudou) await storeSet(LOG_KEY, JSON.stringify(log));
+}
 async function renderLog(){
   const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
   const esc = t => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   document.getElementById("logList").innerHTML = log.length
-    ? log.slice(-80).reverse().map(e=>`<div style="padding:3px 0; border-bottom:1px solid var(--line);"><b>${fmtTs(e.ts)}</b> · ${esc(e.acao)} · leito ${esc(e.leito)} · ${esc(e.ini)}${e.det ? `<br><span style="color:var(--muted);">${esc(e.det).replace(/\n/g,"<br>")}</span>` : ""}</div>`).join("")
+    ? log.slice(-80).reverse().map(e=>`<div style="padding:3px 0; border-bottom:1px solid var(--line);"><b>${fmtTs(e.ts)}</b> · ${esc(e.acao)} · leito ${esc(e.leito)} · ${esc(e.cod || "—")}${e.det ? `<br><span style="color:var(--muted);">${esc(e.det).replace(/\n/g,"<br>")}</span>` : ""}</div>`).join("")
       + (log.length > 80 ? `<div style="color:var(--muted); padding-top:4px;">… ${log.length - 80} eventos anteriores no CSV.</div>` : "")
     : `<div style="color:var(--muted);">Nenhum evento registrado ainda.</div>`;
 }
@@ -2075,7 +2138,7 @@ document.getElementById("logBtn").addEventListener("click", ()=>{
 document.getElementById("logExportBtn").addEventListener("click", async ()=>{
   const log = JSON.parse(await storeGet(LOG_KEY) || "[]");
   const q = v => '"' + String(v == null ? "" : v).replace(/"/g,'""').replace(/\r?\n/g," / ") + '"';
-  const csv = "\ufeff" + ["data_hora;acao;leito;iniciais;detalhes"].concat(log.map(e=>[fmtTs(e.ts), e.acao, e.leito, e.ini, e.det].map(q).join(";"))).join("\r\n");
+  const csv = "\ufeff" + ["data_hora;acao;leito;codigo;detalhes"].concat(log.map(e=>[fmtTs(e.ts), e.acao, e.leito, e.cod || e.ini, e.det].map(q).join(";"))).join("\r\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
   const d = new Date(), z = n => String(n).padStart(2,"0");
@@ -2100,7 +2163,7 @@ document.getElementById("clearDayBtn").addEventListener("click", async ()=>{
   }
   const hoje = new Date().toLocaleDateString("pt-BR");
   if(!nBal && !nEx){ alert(`Nenhum controle salvo hoje (${hoje}) para apagar.`); return; }
-  const ok = confirm(`Apagar os controles salvos HOJE (${hoje})?\n\n• ${nBal} balanço(s)\n• ${nEx} registro(s) de exames\n\nDias anteriores e o log anonimizado são mantidos.\nEsta ação NÃO pode ser desfeita.`);
+  const ok = confirm(`Apagar os controles salvos HOJE (${hoje})?\n\n• ${nBal} balanço(s)\n• ${nEx} registro(s) de exames\n\nDias anteriores e o log (pseudonimizado) são mantidos.\nEsta ação NÃO pode ser desfeita.`);
   if(!ok) return;
   const keep = [];
   for(const x of plan){
@@ -2108,6 +2171,7 @@ document.getElementById("clearDayBtn").addEventListener("click", async ()=>{
     if(x.h2.length) await storeSet("hist_" + x.p.id, JSON.stringify(x.h2)); else localStorage.removeItem(STORAGE_PREFIX + "hist_" + x.p.id);
     if(x.e2.length) await storeSet("exam_" + x.p.id, JSON.stringify(x.e2)); else localStorage.removeItem(STORAGE_PREFIX + "exam_" + x.p.id);
     if(x.h2.length || x.e2.length) keep.push(x.p);
+    else await logEvent("sem dados após apagar o dia — vínculo removido", x.p.cod, x.p.leito, "");
   }
   await storeSet("index_pacientes", JSON.stringify(keep));
   await logEvent("controles do dia apagados", null, null, `${nBal} balanço(s), ${nEx} exame(s) de ${hoje}`);
@@ -2171,7 +2235,7 @@ document.getElementById("printUnitBtn").addEventListener("click", async ()=>{
   window.print();
 });
 
-renderPatients().then(()=>{
+migrarLogAntigo().then(renderPatients).then(()=>{
   const note = document.getElementById("persistNote");
   note.textContent = storageAvailable
     ? "Os registros ficam salvos neste navegador/dispositivo entre sessões (localStorage)."
