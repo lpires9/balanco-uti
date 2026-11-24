@@ -150,6 +150,7 @@
 <div class="card" id="examCard" style="display:none;">
   <h2>Exames — conferir</h2>
   <div id="examMeta" style="font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
+  <div id="examAlerts"></div>
   <textarea id="examText" rows="9" style="width:100%; font-family:ui-monospace,Consolas,monospace; font-size:12px; box-sizing:border-box;"></textarea>
   <div style="font-size:11px; color:var(--muted); margin:4px 0 10px;">Entre parênteses: resultado anterior informado pelo laboratório. O texto pode ser editado antes de copiar.</div>
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -781,7 +782,7 @@ const EXAM_ABBR = [
 ];
 // Linhas do texto: hemograma | renal+eletrólitos | hepático | coagulação | inflamatórios/cardíacos | gaso | outros
 const EXAM_LINES = [["hemato"],["renal","eletro"],["hep"],["coag"],["infl"],["gaso"],["outros"]];
-const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","UR","CR","TFG","NA","K","MG","CA","CAI","P","CL",
+const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","BAST","UR","CR","TFG","NA","K","MG","CA","CAI","P","CL",
   "BT","BD","BI","TGO","TGP","FA","GGT","ALB","AMIL","LIP","TAP","ATV","INR","TTPA","RATIO","FIBRIN","DD",
   "PCR","PCT","LAC","TROPO","CKMB","CPK","DHL","BNP"];
 
@@ -794,6 +795,153 @@ function thousands(v){
   const n = parseFloat(String(v).replace(/\./g,"").replace(",","."));
   if(isNaN(n)) return v;
   return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+// "1,70" → 1.7 · "15.750" → 15750 · "461.000" → 461000 · "13,5S" → 13.5 · "<0,040" → 0.04
+function examNumBR(v){
+  if(v == null) return null;
+  let t = String(v).trim().split(/\s|\(/)[0].replace(/[<>%sS]/g,"");
+  if(/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) t = t.replace(/\./g,"");
+  t = t.replace(",",".");
+  const n = parseFloat(t);
+  return isNaN(n) ? null : n;
+}
+
+// Limites para avisos (adulto, unidades do laudo deste laboratório).
+// crit = valor crítico; warn = alterado relevante. null = sem limite naquele lado.
+const EXAM_LIMITS = {
+  K:    {critLow:2.5, low:3.0, high:5.5, critHigh:6.5},
+  NA:   {critLow:120, low:130, high:150, critHigh:160},
+  MG:   {critLow:1.0, low:1.5, high:4.0, critHigh:7.0},
+  CAI:  {critLow:0.8, low:1.0, high:1.4, critHigh:1.6},
+  CA:   {critLow:6.5, low:7.5, high:11.5, critHigh:13.0},
+  P:    {critLow:1.0, low:2.0, high:6.5, critHigh:9.0},
+  HB:   {critLow:7.0, low:8.0},
+  PLAQ: {critLow:20000, low:50000, high:1000000},
+  LEUCO:{critLow:1000, low:2000, high:20000, critHigh:40000},
+  BAST: {high:10},
+  CR:   {high:3.5},
+  UR:   {high:200},
+  TFG:  {critLow:15, low:30},
+  INR:  {high:2.0, critHigh:5.0},
+  BT:   {high:2.0, critHigh:12.0},
+  LAC:  {high:2.0, critHigh:4.0},
+  PCT:  {high:2.0, critHigh:10.0},
+  GLIC: {critLow:60, low:70, high:250, critHigh:400},
+  DD:   {high:5000}
+};
+const EXAM_NAMES = {K:"Potássio",NA:"Sódio",MG:"Magnésio",CAI:"Cálcio iônico",CA:"Cálcio",P:"Fósforo",HB:"Hemoglobina",
+  PLAQ:"Plaquetas",LEUCO:"Leucócitos",BAST:"Bastonetes",CR:"Creatinina",UR:"Ureia",TFG:"TFG",INR:"INR",BT:"Bilirrubina total",
+  LAC:"Lactato",PCT:"Procalcitonina",GLIC:"Glicose",DD:"D-dímero",TROPO:"Troponina",PCR:"PCR"};
+
+function examLevel(key, num){
+  const L = EXAM_LIMITS[key];
+  if(!L || num == null) return null;
+  if(L.critLow != null && num < L.critLow) return "crit";
+  if(L.critHigh != null && num > L.critHigh) return "crit";
+  if(L.low != null && num < L.low) return "warn";
+  if(L.high != null && num > L.high) return "warn";
+  return null;
+}
+
+// "22/11/2026 03:41" → Date (meia-noite do dia)
+function dateBR(d){ const m = String(d||"").match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? new Date(+m[3], +m[2]-1, +m[1]) : null; }
+function dayDiff(a, b){ const x = dateBR(a), y = dateBR(b); return (x && y) ? Math.round((x - y) / 86400000) : null; }
+
+// Série por exame: {KEY: [{date:"dd/mm/aaaa", num, value, src:"pdf"|"lab"}...]} em ordem de data.
+// Valores dos PDFs salvos têm prioridade; "Resultados Anteriores" do laudo preenchem dias faltantes.
+function examSeries(entries){
+  const map = {};
+  const put = (key, date, num, value, src) => {
+    if(num == null || !date) return;
+    const byDate = (map[key] = map[key] || {});
+    if(byDate[date] && byDate[date].src === "pdf" && src === "lab") return;
+    byDate[date] = {date, num, value, src};
+  };
+  (entries||[]).forEach(e=>{
+    const day = String(e.coleta||"").split(" ")[0];
+    (e.items||[]).forEach(it=>{
+      const num = it.num != null ? it.num : examNumBR(it.value);
+      put(it.key, day, num, it.key === "LEUCO" ? thousands(num) : String(it.value).split(" (")[0], "pdf");
+      (it.prevs||[]).forEach(pv=> put(it.key, pv.date, pv.num, pv.value, "lab"));
+    });
+  });
+  const out = {};
+  Object.keys(map).forEach(k=>{
+    out[k] = Object.values(map[k]).sort((a,b)=> coletaKey(a.date).localeCompare(coletaKey(b.date)));
+  });
+  return out;
+}
+
+// Avisos do exame mais recente: valores críticos + tendências.
+function examAlerts(entries){
+  const series = examSeries(entries);
+  const alerts = [];
+  const fmt = n => String(Math.round(n*100)/100).replace(".", ",");
+  Object.keys(series).forEach(key=>{
+    const s = series[key], last = s[s.length-1];
+    const lvl = examLevel(key, last.num);
+    if(lvl){
+      const L = EXAM_LIMITS[key];
+      const dir = (L.low != null && last.num < L.low) || (L.critLow != null && last.num < L.critLow) ? "baixo" : "alto";
+      alerts.push({level: lvl, key, text: `${EXAM_NAMES[key] || key} ${last.value} (${dir})`});
+    }
+    // tendências (valor anterior até 2 dias antes; CR: menor valor em 7 dias)
+    const prevWithin = days => { for(let i=s.length-2;i>=0;i--){ const d = dayDiff(last.date, s[i].date); if(d != null && d >= 1 && d <= days) return s[i]; } return null; };
+    if(key === "CR"){
+      const p2 = prevWithin(2);
+      const base = s.filter(x=>{ const d = dayDiff(last.date, x.date); return d != null && d >= 1 && d <= 7; }).reduce((m,x)=> m == null || x.num < m.num ? x : m, null);
+      if(p2 && last.num - p2.num >= 0.3) alerts.push({level:"warn", key, text:`CR +${fmt(last.num - p2.num)} em ${dayDiff(last.date,p2.date)}d (KDIGO ≥0,3)`});
+      else if(base && last.num >= 1.5 * base.num) alerts.push({level:"warn", key, text:`CR ${fmt(last.num/base.num)}× o menor valor em 7d (KDIGO ≥1,5×)`});
+    }
+    if(key === "NA"){
+      const p = prevWithin(1);
+      if(p && Math.abs(last.num - p.num) >= 10) alerts.push({level:"crit", key, text:`Sódio variou ${last.num > p.num ? "+" : ""}${fmt(last.num - p.num)} em 24h`});
+      else if(p && Math.abs(last.num - p.num) >= 8) alerts.push({level:"warn", key, text:`Sódio variou ${last.num > p.num ? "+" : ""}${fmt(last.num - p.num)} em 24h`});
+    }
+    if(key === "HB"){
+      const p = prevWithin(1);
+      if(p && p.num - last.num >= 2) alerts.push({level:"warn", key, text:`Queda de Hb ${fmt(p.num - last.num)} g/dL em 24h`});
+    }
+    if(key === "PLAQ"){
+      const p = prevWithin(3);
+      if(p && last.num <= 0.5 * p.num) alerts.push({level:"warn", key, text:`Plaquetas caíram ≥50% (${thousands(p.num)} → ${thousands(last.num)})`});
+    }
+    if(key === "PCR" || key === "PCT" || key === "LAC" || key === "TROPO"){
+      const p = prevWithin(2);
+      if(p && p.num > 0 && last.num >= 1.5 * p.num && last.num - p.num > (key === "PCR" ? 10 : 0)) alerts.push({level:"warn", key, text:`${EXAM_NAMES[key]} em ascensão (${p.value} → ${last.value})`});
+    }
+  });
+  // críticos primeiro
+  return alerts.sort((a,b)=> (a.level === "crit" ? 0 : 1) - (b.level === "crit" ? 0 : 1));
+}
+
+function examAlertChips(alerts){
+  if(!alerts.length) return "";
+  return `<div style="margin:6px 0;">${alerts.map(a=>`<span class="alert-chip alert-${a.level === "crit" ? "warn" : "info"}">${a.level === "crit" ? "⛔" : "⚠"} ${a.text}</span>`).join("")}</div>`;
+}
+
+// Tabela de comparação: linhas = exames, colunas = dias (últimos 8).
+function buildExamTable(entries){
+  const series = examSeries(entries);
+  const keys = EXAM_KEY_ORDER.filter(k=>series[k]).concat(Object.keys(series).filter(k=>!EXAM_KEY_ORDER.includes(k) && !/^GASO/.test(k)));
+  if(!keys.length) return "";
+  const days = [...new Set([].concat(...keys.map(k=>series[k].map(x=>x.date))))].sort((a,b)=>coletaKey(a).localeCompare(coletaKey(b))).slice(-8);
+  const cell = (k, d) => {
+    const v = (series[k]||[]).find(x=>x.date === d);
+    if(!v) return `<td style="color:var(--muted); text-align:center;">·</td>`;
+    const lvl = examLevel(k, v.num);
+    const color = lvl === "crit" ? "color:#ff6b6b; font-weight:700;" : lvl === "warn" ? "color:#f0b429; font-weight:600;" : "";
+    const lab = v.src === "lab" ? "font-style:italic; opacity:.75;" : "";
+    return `<td style="text-align:right; padding:2px 8px; ${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
+  };
+  return `<div style="overflow-x:auto; margin-top:8px;">
+    <table style="border-collapse:collapse; font-size:12px; font-family:ui-monospace,Consolas,monospace;">
+      <tr><th style="text-align:left; padding:2px 8px;"></th>${days.map(d=>`<th style="padding:2px 8px; text-align:right;">${d.slice(0,5)}</th>`).join("")}</tr>
+      ${keys.map(k=>`<tr style="border-top:1px solid var(--line);"><td style="padding:2px 8px; font-weight:600;">${k}</td>${days.map(d=>cell(k,d)).join("")}</tr>`).join("")}
+    </table>
+    <div style="font-size:10.5px; color:var(--muted); margin-top:4px;">Em itálico: resultado anterior informado no laudo (dia não salvo aqui). Amarelo = alterado · vermelho = crítico.</div>
+  </div>`;
 }
 
 function parseExames(lineObjects){
@@ -823,18 +971,22 @@ function parseExames(lineObjects){
   }
   const blocks = starts.map((st, k)=>({title: lines[st].trim(), tn: N[st], from: st, to: k+1<starts.length ? starts[k+1] : lines.length}));
 
-  const add = (key, label, value, group, prev) => {
+  const add = (key, label, value, group, prev, extra) => {
     if(value == null || value === "") return;
-    out.items.push({key, label, value, group, prev: prev || null});
+    out.items.push(Object.assign({key, label, value, group, prev: prev || null, num: examNumBR(value)}, extra || {}));
   };
 
   blocks.forEach(b=>{
     const body = lines.slice(b.from+1, b.to);
     const bodyN = N.slice(b.from+1, b.to);
     const find = re => { for(let i=0;i<bodyN.length;i++){ const mm = bodyN[i].match(re); if(mm) return {m:mm, raw: body[i]}; } return null; };
-    let prev = null;
-    const pf = find(/^RESULTADOS ANTERIORES:\s*([<>]?\s*-?\d+(?:[.,]\d+)?)\s*\((\d{2}\/\d{2})/);
-    if(pf) prev = {value: examNum(pf.m[1]), date: pf.m[2]};
+    let prev = null, prevs = [];
+    const pf = find(/^RESULTADOS ANTERIORES:/);
+    if(pf){
+      prevs = [...pf.raw.matchAll(/([<>]?\s*-?\d+(?:[.,]\d+)?)\s*\((\d{2}\/\d{2}\/\d{4})\)/g)]
+        .map(x=>({value: examNum(x[1]), num: examNumBR(x[1]), date: x[2]}));
+      if(prevs.length) prev = {value: prevs[0].value, date: prevs[0].date.slice(0,5)};
+    }
 
     if(/HEMOGRAMA/.test(b.tn)){
       const val = re => { const f = find(re); return f ? examNum(f.raw.split(":").slice(1).join(":") || f.raw) : null; };
@@ -844,7 +996,9 @@ function parseExames(lineObjects){
       const lv = leu ? examNum(leu.raw.replace(/^[^\d]*/,"")) : null;
       const rel = re => { const f = find(re); return f ? examNum(f.raw.replace(/^[^\d]*/,"")) : null; };
       const diff = [["BAST", rel(/^BASTONETES/)], ["SEG", rel(/^SEGMENTADOS/)], ["LINF", rel(/^LINFOCITOS/)]].filter(x=>x[1]!=null);
-      if(lv) add("LEUCO","LEUCO", thousands(lv) + (diff.length ? " (" + diff.map(x=>x[0]+" "+x[1]+"%").join(" / ") + ")" : ""), "hemato");
+      if(lv) add("LEUCO","LEUCO", thousands(lv) + (diff.length ? " (" + diff.map(x=>x[0]+" "+x[1]+"%").join(" / ") + ")" : ""), "hemato", null, {num: examNumBR(thousands(lv))});
+      const bast = diff.find(x=>x[0]==="BAST");
+      if(bast) add("BAST","BAST %", bast[1], "hemato", null, {hidden:true});
       const pl = find(/^PLAQUETAS\b/);
       if(pl) add("PLAQ","PLAQ", thousands(examNum(pl.raw.replace(/^[^\d]*/,""))), "hemato");
       return;
@@ -883,7 +1037,7 @@ function parseExames(lineObjects){
     const value = examNum(r.raw.replace(/^[^:]*:?\s*/,"").replace(/^[.\s]*/,""));
     const ab = EXAM_ABBR.find(([re])=>re.test(b.tn));
     const label = ab ? ab[1] : b.title.replace(/\s*-.*$/,"").slice(0,18).toUpperCase();
-    add(label, label, value, ab ? ab[2] : "outros", prev);
+    add(label, label, value, ab ? ab[2] : "outros", prev, {prevs});
     // Neste laboratório a TFG estimada vem como "Observação: 45,6" no bloco da creatinina.
     if(label === "CR"){
       const tfg = find(/^OBSERVACAO:\s*\d+(?:[.,]\d+)?\s*$/);
@@ -895,7 +1049,7 @@ function parseExames(lineObjects){
 
 function buildExamText(ex){
   const byGroup = {};
-  ex.items.forEach(it=>{ (byGroup[it.group] = byGroup[it.group] || []).push(it); });
+  ex.items.filter(it=>!it.hidden).forEach(it=>{ (byGroup[it.group] = byGroup[it.group] || []).push(it); });
   const fmtItem = it => `${it.label} ${it.value}` + (it.prev && it.prev.value != null ? ` (${it.prev.value})` : "");
   const rank = it => { const i = EXAM_KEY_ORDER.indexOf(it.key); return i < 0 ? 999 : i; };
   const lines = [`# Exames${ex.coleta ? " " + ex.coleta.split(" ")[0] : ""}:`];
@@ -914,8 +1068,11 @@ function coletaKey(c){
   return m ? m[3]+m[2]+m[1]+(m[4]||"00")+(m[5]||"00") : "";
 }
 let currentExam = null;
-function showExamReview(ex){
+async function showExamReview(ex){
   currentExam = ex;
+  const pid = ex.atend ? ("atd_" + ex.atend) : ("nm_" + (ex.nome || "Paciente sem nome").replace(/\s+/g,"_"));
+  const saved = JSON.parse(await storeGet("exam_" + pid) || "[]").filter(e => e.coleta !== ex.coleta);
+  document.getElementById("examAlerts").innerHTML = examAlertChips(examAlerts(saved.concat([ex])));
   const card = document.getElementById("examCard");
   card.style.display = "block";
   document.getElementById("examMeta").textContent =
@@ -1689,6 +1846,8 @@ function buildExamSection(pid, exams){
     </details>`;
   const n = exams.length;
   return `<div class="record"><div class="rec-head"><div class="rec-date">Exames laboratoriais (${n})</div></div>
+    ${examAlertChips(examAlerts(exams))}
+    ${buildExamTable(exams)}
     ${row(exams[n-1], n-1, true)}
     ${exams.slice(0, n-1).map((e,i)=>({e,i})).reverse().map(({e,i})=>row(e,i,false)).join("")}
   </div>`;
