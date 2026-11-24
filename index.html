@@ -2287,6 +2287,14 @@ function buildExamSection(pid, exams){
     </details>`;
 }
 
+// Ordem por leito, comparando os números como números ("UTI 3 9" antes de "UTI 3 11").
+// Sem leito ("—") vai para o fim.
+function compararLeito(a, b){
+  const sem = l => !l || l === "—" || !/\d/.test(l);
+  if(sem(a) !== sem(b)) return sem(a) ? 1 : -1;
+  return String(a||"").localeCompare(String(b||""), "pt-BR", {numeric:true, sensitivity:"base"});
+}
+
 async function renderPatients(){
   await unirDuplicados();
   const container = document.getElementById("patients");
@@ -2297,6 +2305,7 @@ async function renderPatients(){
   if(!index.length){ emptyMsg.style.display="block"; return; }
   emptyMsg.style.display="none";
   if(garantirCodigos(index)) await storeSet("index_pacientes", JSON.stringify(index));
+  index.sort((a,b)=> compararLeito(a.leito, b.leito) || String(a.nome).localeCompare(String(b.nome), "pt-BR"));
 
   for(const p of index){
     let history = await storeGet("hist_" + p.id);
@@ -2541,8 +2550,7 @@ const UNIT_EX_KEYS = ["HB","LEUCO","PLAQ","UR","CR","NA","K","MG","CAI","BT","IN
 const UNIT_PER_PAGE = 5;
 function buildUnitReport(rows){
   const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
-  const leitoKey = l => { const n = parseInt(String(l).replace(/\D/g,"")); return isNaN(n) ? 9999 : n; };
-  rows.sort((a,b)=> leitoKey(a.p.leito) - leitoKey(b.p.leito));
+  rows.sort((a,b)=> compararLeito(a.p.leito, b.p.leito) || String(a.p.nome).localeCompare(String(b.p.nome), "pt-BR"));
 
   // Mesmos 4 dias para todos: os 4 dias que terminam no exame mais recente da unidade.
   const series = rows.map(r => examSeries(r.exams));
