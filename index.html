@@ -526,12 +526,18 @@ function nearestHourColumn(x, header){
 // that row's own "Total" column value, if it has one). Falls back to
 // checking the next couple of lines for rows whose label wraps (e.g.
 // "FREQUENCIA RESPIRATORIA -" / values / "RPM" across 3 lines).
-function extractSeries(lineObjects, keywords, lookahead=3){
+function extractSeries(lineObjects, keywords, lookahead=3, soContinuacao=false){
   const idx = lineObjects.findIndex(lo => keywords.some(k => lo.text.toUpperCase().includes(k.toUpperCase())));
   if(idx === -1) return [];
   const header = findHeaderForRow(lineObjects, idx);
   if(!header) return [];
   for(let offset=0; offset<=lookahead && idx+offset<lineObjects.length; offset++){
+    // soContinuacao: uma linha seguinte que começa com texto é OUTRA linha da tabela
+    // (não a continuação do rótulo) — parar em vez de pegar os números dela.
+    if(soContinuacao && offset > 0){
+      const first = lineObjects[idx+offset].items.find(it => it.str.trim());
+      if(!first || /[A-Za-zÀ-ÿ]/.test(first.str)) break;
+    }
     const items = lineObjects[idx+offset].items.filter(it => /^-?\d+\.\d+$/.test(it.str.trim()));
     if(items.length){
       const points = [];
@@ -722,8 +728,11 @@ function findField(lines, label, stopPattern){
   return rest.trim();
 }
 
-// Acima deste valor, um registro de evacuação é volume (mL), não nº de episódios.
-const EVAC_VOLUME_LIMIAR = 50;
+// Até este valor, um registro de evacuação é nº de episódios; acima, é volume (mL).
+// (Era 50: um registro de "50" mL virava 50 episódios.) Mais de 5 episódios num
+// mesmo horário não é plausível; registros antigos acima disso são reinterpretados
+// como mL na exibição.
+const EVAC_VOLUME_LIMIAR = 5;
 
 // Normaliza evacuação {evacCount, evacVol} — inclusive registros antigos em que
 // um volume (ex: 200) foi salvo como "nº de vezes".
@@ -897,7 +906,7 @@ function parseBalanco(lineObjects){
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
   // Evacuação: cada registro horário pode ser nº de episódios (valor pequeno)
   // ou volume em mL (valor > EVAC_VOLUME_LIMIAR). Soma cada tipo separadamente.
-  const evacSeries = extractSeries(lineObjects, ["EVACUA","DEJE"]);
+  const evacSeries = extractSeries(lineObjects, ["EVACUA","DEJE"], 3, true);
   let evacCount = null, evacVol = null;
   const addEvac = v => {
     v = Math.abs(v);
@@ -907,7 +916,9 @@ function parseBalanco(lineObjects){
   if(evacSeries.length){
     evacSeries.forEach(p => addEvac(p.value));
   } else {
-    const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
+    // Só a própria linha: sem evacuação registrada, olhar as linhas de baixo
+    // pegaria números de outro item da tabela.
+    const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"], 0);
     if(evacArr.length) addEvac(evacArr[evacArr.length-1]);
   }
   if(evacCount != null) evacCount = Math.round(evacCount);
