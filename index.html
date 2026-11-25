@@ -526,12 +526,18 @@ function nearestHourColumn(x, header){
 // that row's own "Total" column value, if it has one). Falls back to
 // checking the next couple of lines for rows whose label wraps (e.g.
 // "FREQUENCIA RESPIRATORIA -" / values / "RPM" across 3 lines).
-function extractSeries(lineObjects, keywords, lookahead=3){
+function extractSeries(lineObjects, keywords, lookahead=3, soContinuacao=false){
   const idx = lineObjects.findIndex(lo => keywords.some(k => lo.text.toUpperCase().includes(k.toUpperCase())));
   if(idx === -1) return [];
   const header = findHeaderForRow(lineObjects, idx);
   if(!header) return [];
   for(let offset=0; offset<=lookahead && idx+offset<lineObjects.length; offset++){
+    // soContinuacao: uma linha seguinte que começa com texto é OUTRA linha da tabela
+    // (não a continuação do rótulo) — parar em vez de pegar os números dela.
+    if(soContinuacao && offset > 0){
+      const first = lineObjects[idx+offset].items.find(it => it.str.trim());
+      if(!first || /[A-Za-zÀ-ÿ]/.test(first.str)) break;
+    }
     const items = lineObjects[idx+offset].items.filter(it => /^-?\d+\.\d+$/.test(it.str.trim()));
     if(items.length){
       const points = [];
@@ -722,8 +728,11 @@ function findField(lines, label, stopPattern){
   return rest.trim();
 }
 
-// Acima deste valor, um registro de evacuação é volume (mL), não nº de episódios.
-const EVAC_VOLUME_LIMIAR = 50;
+// Até este valor, um registro de evacuação é nº de episódios; acima, é volume (mL).
+// (Era 50: um registro de "50" mL virava 50 episódios.) Mais de 5 episódios num
+// mesmo horário não é plausível; registros antigos acima disso são reinterpretados
+// como mL na exibição.
+const EVAC_VOLUME_LIMIAR = 5;
 
 // Normaliza evacuação {evacCount, evacVol} — inclusive registros antigos em que
 // um volume (ex: 200) foi salvo como "nº de vezes".
@@ -897,7 +906,7 @@ function parseBalanco(lineObjects){
   const dorSim = dorArr.length ? (dorArr.some(v=>v>0) ? "Sim" : "Não") : "";
   // Evacuação: cada registro horário pode ser nº de episódios (valor pequeno)
   // ou volume em mL (valor > EVAC_VOLUME_LIMIAR). Soma cada tipo separadamente.
-  const evacSeries = extractSeries(lineObjects, ["EVACUA","DEJE"]);
+  const evacSeries = extractSeries(lineObjects, ["EVACUA","DEJE"], 3, true);
   let evacCount = null, evacVol = null;
   const addEvac = v => {
     v = Math.abs(v);
@@ -907,7 +916,9 @@ function parseBalanco(lineObjects){
   if(evacSeries.length){
     evacSeries.forEach(p => addEvac(p.value));
   } else {
-    const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"]);
+    // Só a própria linha: sem evacuação registrada, olhar as linhas de baixo
+    // pegaria números de outro item da tabela.
+    const evacArr = getRowNumbers(lines, ["EVACUA","DEJE"], 0);
     if(evacArr.length) addEvac(evacArr[evacArr.length-1]);
   }
   if(evacCount != null) evacCount = Math.round(evacCount);
@@ -987,7 +998,48 @@ function enqueuePdf(file){
 function isExamPdf(lineObjects){
   const t = norm(lineObjects.map(l=>l.text).join("\n"));
   if(t.includes("TOTAL DE GANHOS") || t.includes("BALANCO HIDRICO")) return false;
+  if(/GASOMETR|GASIMETR/.test(t) && /\bP\s?CO2\b|\bPACO2\b|\bHCO3\b|BICARBONATO/.test(t)) return true;
   return /\bMATERIAL\b/.test(t) && (/RESULTADO/.test(t) || /VALOR(ES)? DE REFERENCIA/.test(t));
+}
+
+// ---------- Gasometria ----------
+// Rótulos (texto normalizado, início da linha). Mais específico primeiro.
+const GASO_PARAMS = [
+  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)\b(?!\s*URIN)/],
+  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))\b/],
+  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))\b/],
+  ["HCO3", /^(HCO3|BICARBONATO)(?!\S*\s*(STD|PADRAO|STANDARD))/],
+  ["BE",   /^(BE|B\.E\.?|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)\b/],
+  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))\b/],   // exige O2: não confundir com saturação de transferrina
+  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)\b/]
+];
+// Valor da linha do rótulo: o número logo após o rótulo (ou após ":"); se a
+// linha só tem o rótulo, o primeiro número da linha seguinte.
+// Nunca pega o "2" de pCO2/pO2/SO2 nem o "3" de HCO3: o rótulo é removido antes.
+function gasoValor(N, i, re){
+  const numRe = /([<>]?\s*[-+]?\d+(?:[.,]\d+)?)/;
+  const m = N[i].match(re);
+  let rest = N[i].slice(m[0].length);
+  if(rest.includes(":")) rest = rest.slice(rest.indexOf(":") + 1);
+  let v = rest.match(numRe);
+  if(!v && i+1 < N.length && /^\s*[<>]?\s*[-+]?\d/.test(N[i+1])) v = N[i+1].match(numRe);
+  return v ? v[1].replace(/\s+/g,"").replace(/^\+/,"") : null;
+}
+// Lê os parâmetros de um trecho de linhas normalizadas. Retorna {PH:"7,21", ...}.
+function gasoScan(N){
+  const out = {};
+  for(let i=0;i<N.length;i++){
+    const t = N[i].trim().replace(/^[*•\-\s]+/,"");
+    for(const [k, re] of GASO_PARAMS){
+      if(out[k] != null || !re.test(t)) continue;
+      const v = gasoValor([...N.slice(0,i), t, ...N.slice(i+1)], i, re);
+      if(v != null){ out[k] = v; break; }
+    }
+  }
+  return out;
+}
+function gasoTexto(vals){
+  return GASO_PARAMS.map(([k])=>k).filter(k=>vals[k] != null).map(k=> k + " " + vals[k]).join(" | ");
 }
 
 // Abreviações usuais em evolução de UTI. A ordem importa (mais específico primeiro).
@@ -1147,6 +1199,127 @@ function examAlertChips(alerts){
   return `<div style="margin:6px 0;">${alerts.map(a=>`<span class="alert-chip alert-${a.level === "crit" ? "warn" : "info"}">${a.level === "crit" ? "Crítico: " : ""}${a.text}</span>`).join("")}</div>`;
 }
 
+// ---------- SOFA-2: componentes medidos (fígado, rim, hemostasia) ----------
+// Ranzani et al., JAMA 2025;334(23):2090 (SOFA-2). Cérebro, respiratório e
+// cardiovascular dependem da avaliação à beira-leito e ficam em branco para o médico.
+// Regras do SOFA-2: pior valor do dia; depois do 1º dia, dia sem exame repete o último
+// valor (LOCF). Rim também usa a diurese (mL/kg/h, se o peso foi informado no balanço),
+// a hemodiálise registrada no balanço do mesmo dia e o critério de TRS (nota "p").
+function sofa2Figado(bt){ return bt == null ? null : bt <= 1.2 ? 0 : bt <= 3 ? 1 : bt <= 6 ? 2 : bt <= 12 ? 3 : 4; }
+function sofa2Creat(cr){ return cr == null ? null : cr <= 1.2 ? 0 : cr <= 2 ? 1 : cr <= 3.5 ? 2 : 3; }
+function sofa2Plaq(k){ return k == null ? null : k > 150 ? 0 : k > 100 ? 1 : k > 80 ? 2 : k > 50 ? 3 : 4; }
+
+// Diurese do balanço: maior período contínuo (h) abaixo de 0,5 e 0,3 mL/kg/h e em anúria.
+// Cada leitura cobre as horas desde a leitura anterior.
+function sofa2Diurese(rec){
+  const ser = rec && rec.series && rec.series.diureseHourly;
+  if(!rec || !rec.peso || !ser || !ser.length) return null;
+  const rel = computeDiureseRelativa(ser.map(p=>({hour:p.hour, value:Math.abs(p.value)})), rec.peso);
+  const run = pred => { let max = 0, cur = 0; rel.forEach(p=>{ if(p.mlkgh != null && pred(p)){ cur += p.intervalH; max = Math.max(max, cur); } else cur = 0; }); return max; };
+  const h05 = run(p=>p.mlkgh < 0.5), h03 = run(p=>p.mlkgh < 0.3), h0 = run(p=>p.value === 0);
+  const pts = (h03 >= 24 || h0 >= 12) ? 3 : h05 >= 12 ? 2 : h05 >= 6 ? 1 : 0;
+  const motivo = pts === 3 ? (h0 >= 12 ? `anúria ${h0}h` : `DU <0,3 por ${h03}h`) : pts ? `DU <0,5 por ${h05}h` : "";
+  return {pts, h05, h03, h0, motivo};
+}
+
+// Série diária do SOFA-2 parcial: [{date, figado, rim, hemo, total, mot:{...}, locf:{...}}]
+function sofa2Serie(exams, history){
+  const fmt = n => String(Math.round(n*100)/100).replace(".", ",");
+  const dias = {};
+  const put = (d, campo, v, pior) => {
+    if(!d || v == null || isNaN(v)) return;
+    const o = (dias[d] = dias[d] || {});
+    o[campo] = o[campo] == null ? v : pior(o[campo], v);
+  };
+  const addLab = (key, d, n) => {
+    if(key === "BT") put(d, "bt", n, Math.max);
+    else if(key === "CR") put(d, "cr", n, Math.max);
+    else if(key === "PLAQ") put(d, "plaq", n > 2000 ? n/1000 : n, Math.min);   // em mil/µL
+    else if(key === "K") put(d, "k", n, Math.max);
+  };
+  (exams||[]).forEach(e=>{
+    const day = String(e.coleta||"").split(" ")[0];
+    (e.items||[]).forEach(it=>{
+      addLab(it.key, day, it.num != null ? it.num : examNumBR(it.value));
+      (it.prevs||[]).forEach(pv=> addLab(it.key, pv.date, pv.num));
+      if(/^GASO ART/.test(it.key)){
+        const g = re => { const m = String(it.value).match(re); return m ? examNumBR(m[1]) : null; };
+        let ph = g(/\bPH\s+([\d.,]+)/i); if(ph != null && ph > 14) ph = ph/1000;
+        put(day, "ph", ph, Math.min);
+        put(day, "hco3", g(/\bHCO3\s+([\d.,]+)/i), Math.min);
+      }
+    });
+  });
+  // Balanço do mesmo dia: diurese e hemodiálise.
+  const balDia = {};
+  (history||[]).forEach(r=>{ if(dateBR(r.dataBal)) balDia[r.dataBal] = r; });
+  const datas = [...new Set(Object.keys(dias).concat(Object.keys(balDia)))]
+    .filter(d=>dateBR(d)).sort((a,b)=> coletaKey(a).localeCompare(coletaKey(b)));
+  let ult = {bt:null, cr:null, plaq:null};
+  let temLab = false;
+  const out = [];
+  datas.forEach(d=>{
+    const o = dias[d] || {};
+    const locf = {};
+    ["bt","cr","plaq"].forEach(k=>{ if(o[k] != null) ult[k] = o[k]; else if(ult[k] != null) locf[k] = true; });
+    if(o.bt != null || o.cr != null || o.plaq != null) temLab = true;
+    if(!temLab) return;   // começa no primeiro dia com exame
+    const mot = {};
+    const figado = sofa2Figado(ult.bt); if(ult.bt != null) mot.figado = `BT ${fmt(ult.bt)}`;
+    const hemo = sofa2Plaq(ult.plaq); if(ult.plaq != null) mot.hemo = `PLAQ ${Math.round(ult.plaq)}k`;
+    let rim = sofa2Creat(ult.cr); if(ult.cr != null) mot.rim = `CR ${fmt(ult.cr)}`;
+    const bal = balDia[d];
+    const du = sofa2Diurese(bal);
+    if(du && du.pts > (rim == null ? -1 : rim)){ rim = du.pts; mot.rim = du.motivo; }
+    const hd = bal && bal.hd !== "" && bal.hd != null && Number(bal.hd) > 0;
+    const disturbio = (o.k != null && o.k >= 6) || (o.ph != null && o.hco3 != null && o.ph <= 7.2 && o.hco3 <= 12);
+    const disfRenal = (ult.cr != null && ult.cr > 1.2) || (du && du.h03 > 6);
+    if(hd){ rim = 4; mot.rim = `hemodiálise ${bal.hd} mL`; }
+    else if(disturbio && disfRenal){
+      rim = 4;
+      mot.rim = "critério de TRS: " + (o.k != null && o.k >= 6 ? `K ${fmt(o.k)}` : `pH ${fmt(o.ph)}, HCO3 ${fmt(o.hco3)}`);
+    }
+    const vals = [figado, rim, hemo].filter(v=>v != null);
+    out.push({date:d, figado, rim, hemo, total: vals.length ? vals.reduce((a,b)=>a+b,0) : null, n: vals.length, mot, locf});
+  });
+  return out;
+}
+
+function sofa2Texto(s){
+  if(!s) return "";
+  const c = (v, m) => v == null ? "_" : `${v}${m ? ` (${m})` : ""}`;
+  return (`SOFA-2 (${s.date.slice(0,5)}): CÉREBRO _ | RESPIRATÓRIO _ | CARDIOVASCULAR _ | `
+    + `FÍGADO ${c(s.figado, s.mot.figado)} | RIM ${c(s.rim, s.mot.rim)} | HEMOSTASIA ${c(s.hemo, s.mot.hemo)} | `
+    + `PARCIAL (LABS) ${s.total == null ? "_" : s.total} | TOTAL _`).toUpperCase();
+}
+
+function buildSofaSection(pid, exams, history){
+  const serie = sofa2Serie(exams, history);
+  if(!serie.length) return "";
+  const dias = serie.slice(-5);
+  const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+  const cell = (s, campo, locfKey) => {
+    const v = s[campo];
+    if(v == null) return `<td class="nd">·</td>`;
+    const cor = v >= 3 ? "color:var(--crit); font-weight:700;" : v >= 1 ? "color:var(--warn); font-weight:700;" : "";
+    const it = locfKey && s.locf[locfKey] ? "font-style:italic; opacity:.75;" : "";
+    return `<td style="${cor}${it}" title="${esc(s.mot[campo] || "")}${locfKey && s.locf[locfKey] ? " (repetido do último exame)" : ""}">${v}</td>`;
+  };
+  const ult = serie[serie.length-1];
+  return `<div class="trend-section">
+    <div class="col-head"><span>SOFA-2 medido <small style="font-weight:400; color:var(--muted);">fígado, rim, hemostasia</small></span>
+      <button class="del-btn copy-sofa" data-id="${pid}">Copiar SOFA-2</button></div>
+    <div style="overflow-x:auto;"><table class="exam-table">
+      <tr><th></th>${dias.map(s=>`<th>${s.date.slice(0,5)}</th>`).join("")}</tr>
+      <tr><td class="k">Fígado</td>${dias.map(s=>cell(s,"figado","bt")).join("")}</tr>
+      <tr><td class="k">Rim</td>${dias.map(s=>cell(s,"rim", s.mot.rim && /^CR/.test(s.mot.rim) ? "cr" : null)).join("")}</tr>
+      <tr><td class="k">Hemostasia</td>${dias.map(s=>cell(s,"hemo","plaq")).join("")}</tr>
+      <tr><td class="k">Parcial</td>${dias.map(s=>`<td style="font-weight:700;">${s.total == null ? "·" : s.total}</td>`).join("")}</tr>
+    </table></div>
+    <div class="hint">Último: ${esc([ult.mot.figado, ult.mot.rim, ult.mot.hemo].filter(Boolean).join(" · ") || "—")}. Cérebro, respiratório e cardiovascular: avaliar à beira-leito. Itálico: sem exame no dia, repete o último. Rim usa também diurese (se peso informado) e hemodiálise do balanço do mesmo dia.</div>
+  </div>`;
+}
+
 // Tabela de comparação: linhas = exames, colunas = dias (últimos 8).
 // Tabela da tela: exames principais (mesmos da impressão) + qualquer outro alterado;
 // o restante fica em "ver todos".
@@ -1210,6 +1383,7 @@ function parseExames(lineObjects){
       if(j>=0) starts.push(j);
     }
   }
+  const gasos = [];   // gasometrias encontradas: {tipo, vals}
   const blocks = starts.map((st, k)=>({title: lines[st].trim(), tn: N[st], from: st, to: k+1<starts.length ? starts[k+1] : lines.length}));
 
   const add = (key, label, value, group, prev, extra) => {
@@ -1263,14 +1437,24 @@ function parseExames(lineObjects){
       if(ra) add("RATIO","RATIO", examNum(ra.raw.replace(/^[^\d]*/,"")), "coag");
       return;
     }
-    if(/GASOMETRIA/.test(b.tn)){
-      const tipo = /VENOSA/.test(b.tn) ? "GASO VEN" : "GASO ART";
-      const parts = [];
-      [["PH",/^PH\b/],["PCO2",/^PCO2\b/],["PO2",/^PO2\b/],["HCO3",/^HCO3|^BICARBONATO/],["BE",/^BE\b|^EXCESSO DE BASE|^BASE EXCESS/],["SAT",/^SAT|^SO2/],["LAC",/^LACTATO/]].forEach(([k,re])=>{
-        const f = find(re); if(f){ const v = examNum(f.raw.replace(/^[^\d<>-]*(?=[<>-]?\d)/,"")); if(v!=null) parts.push(k + " " + v); }
-      });
-      if(parts.length) add(tipo, tipo, parts.join(" | "), "gaso");
+    if(/GASOMETR|GASIMETR|GASES (ARTERIA|VENOS|SANGU)/.test(b.tn)){
+      const tipo = /VENOS/.test(b.tn) || bodyN.some(l=>/^MATERIAL\b.*VENOS/.test(l)) ? "GASO VEN" : "GASO ART";
+      const vals = gasoScan(bodyN);
+      if(Object.keys(vals).length) gasos.push({tipo, vals});
       return;
+    }
+    // Laudo com um bloco por parâmetro da gasometria (título "PH", "PCO2"...).
+    const gp = GASO_PARAMS.find(([k, re]) => k !== "LAC" && re.test(b.tn.trim()));
+    if(gp){
+      const r0 = bodyN.find(l=>/^RESULTADO\b/.test(l));
+      const vals = r0 ? gasoScan([gp[0] + " " + r0.replace(/^RESULTADO\b[\s.:]*/,"")]) : gasoScan([b.tn.trim(), ...bodyN]);
+      if(vals[gp[0]] != null){
+        const tipo = /VENOS/.test(b.tn) || bodyN.some(l=>/^MATERIAL\b.*VENOS/.test(l)) ? "GASO VEN" : "GASO ART";
+        let g = gasos.find(x=>x.tipo === tipo && x.avulso);
+        if(!g){ g = {tipo, vals:{}, avulso:true}; gasos.push(g); }
+        g.vals[gp[0]] = vals[gp[0]];
+        return;
+      }
     }
     // Genérico: "Resultado: valor"
     const r = find(/^RESULTADO\b[\s.:]*[<>]?\s*-?\d/);
@@ -1284,6 +1468,21 @@ function parseExames(lineObjects){
       const tfg = find(/^OBSERVACAO:\s*\d+(?:[.,]\d+)?\s*$/);
       if(tfg) add("TFG", "TFG", examNum(tfg.raw.replace(/^[^\d]*/,"")), "renal");
     }
+  });
+  // Laudo só de gasometria, sem blocos "Material:" (ex.: impresso do gasômetro).
+  if(!gasos.length && !blocks.length && /GASOMETR|GASIMETR/.test(N.join(" "))){
+    const vals = gasoScan(N);
+    if(Object.keys(vals).length >= 2) gasos.push({tipo: N.some(l=>/VENOS/.test(l)) ? "GASO VEN" : "GASO ART", vals});
+  }
+  gasos.forEach((g, i)=>{
+    const n = gasos.filter((x,j)=> j < i && x.tipo === g.tipo).length;
+    const key = n ? g.tipo + " " + (n+1) : g.tipo;
+    const ks = Object.keys(g.vals);
+    // Parâmetro avulso sem os demais (ex.: bicarbonato sérico) não vira "gasometria".
+    if(g.avulso && ks.length < 2){ ks.forEach(k=> add(k, k, g.vals[k], k === "HCO3" ? "eletro" : "outros")); return; }
+    add(key, g.tipo, gasoTexto(g.vals), "gaso");
+    // Lactato da gasometria entra também na série de lactato (tabela, avisos).
+    if(g.vals.LAC != null && !out.items.some(it=>it.key === "LAC")) add("LAC", "LAC", g.vals.LAC, "infl", null, {hidden:true});
   });
   return out;
 }
@@ -1659,10 +1858,10 @@ async function fillReview(d){
     implausibleList.innerHTML = "";
   }
 
-  // Convenience: pre-fill weight/dilution from the last time they were entered
-  // (still fully editable — useful since the same patient often keeps the
-  // same prescription across several shifts).
-  const lastSettings = JSON.parse(await storeGet("last_peso_settings") || "{}");
+  // Peso e diluição da nora vêm do último balanço DESTE paciente (nunca de outro:
+  // um peso errado distorce dose de nora, diurese em mL/kg/h e o SOFA-2 renal).
+  const pidRev = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), d.atend, d.nome || "Paciente sem nome");
+  const lastSettings = JSON.parse(await storeGet("peso_" + pidRev) || "{}");
   document.getElementById("rPeso").value = lastSettings.peso ?? "";
   document.getElementById("rNoraMg").value = lastSettings.noraMg ?? "";
   document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
@@ -1809,7 +2008,6 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   const noraMl = parseFloat(document.getElementById("rNoraMl").value) || null;
   const balancoVal = parseFloat(document.getElementById("rBalanco").value) || 0;
 
-  await storeSet("last_peso_settings", JSON.stringify({peso, noraMg, noraMl}));
 
   const vaso = (lastParsedSeries && peso)
     ? buildVasopressorAnalysis(lastParsedSeries, peso, noraMg, noraMl, balancoVal)
@@ -1841,6 +2039,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   const atend = document.getElementById("rAtend").value.trim();
   const patientId = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), atend, nome);
 
+  if(peso || noraMg || noraMl) await storeSet("peso_" + patientId, JSON.stringify({peso, noraMg, noraMl}));
   let history = await storeGet("hist_" + patientId);
   history = history ? JSON.parse(history) : [];
   history.push(record);
@@ -2257,8 +2456,8 @@ function buildPrintReport(p, history){
       <h2>Balanço do último plantão</h2>
       <div class="print-stat-grid">
         <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h)` : ""}</span>${Math.abs(latest.diurese)} mL</div>
-        ${(latest.drenos||[]).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
-        ${(latest.hd!=="" && latest.hd!=null) ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
+        ${(latest.drenos||[]).filter(d=>Number(d.total) > 0).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
+        ${Number(latest.hd) > 0 ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
         <div><span class="k">Balanço hídrico</span>${latest.balanco>=0?'+':''}${latest.balanco} mL</div>
         <div><span class="k">FC</span>${latest.fc.min}–${latest.fc.max} bpm</div>
         <div><span class="k">FR</span>${latest.fr.min}–${latest.fr.max} irpm</div>
@@ -2367,7 +2566,7 @@ async function renderPatients(){
                    : `<div class="col-empty">Sem balanço salvo. Solte o PDF do balanço do MV.</div>`}
           ${buildTrendSection(history)}
         </div>
-        <div class="pt-col">${buildExamSection(p.id, exams)}${latest ? buildVasoSection(latest) : ""}</div>
+        <div class="pt-col">${buildExamSection(p.id, exams)}${buildSofaSection(p.id, exams, history)}${latest ? buildVasoSection(latest) : ""}</div>
       </div>
       ${history.length > 1 ? `<details class="mini older"><summary>Plantões anteriores (${history.length-1})</summary>
         ${history.slice(0,-1).map((r,i)=>({r,i})).reverse().map(({r,i})=>`<div class="record">${recHead(r,i)}${recAlerts(r)}${buildRecordTiles(r)}</div>`).join("")}
@@ -2388,6 +2587,7 @@ async function renderPatients(){
     await storeSet("index_pacientes", JSON.stringify(index));
     localStorage.removeItem(STORAGE_PREFIX + "hist_" + id);
     localStorage.removeItem(STORAGE_PREFIX + "exam_" + id);
+    localStorage.removeItem(STORAGE_PREFIX + "peso_" + id);
     await logEvent(motivo === "alta" ? "alta — vínculo removido" : "paciente excluído — vínculo removido", pDel ? pDel.cod : null, pDel ? pDel.leito : null, "");
     renderPatients();
   };
@@ -2419,6 +2619,15 @@ async function renderPatients(){
       const list = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
       const e = list[parseInt(btn.dataset.idx)];
       if(e) copyToClipboard(e.text, btn);
+    });
+  });
+  container.querySelectorAll(".copy-sofa").forEach(btn=>{
+    btn.addEventListener("click", async (ev)=>{
+      ev.preventDefault(); ev.stopPropagation();
+      const ex = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
+      const hi = JSON.parse(await storeGet("hist_" + btn.dataset.id) || "[]");
+      const s = sofa2Serie(ex, hi);
+      if(s.length) copyToClipboard(sofa2Texto(s[s.length-1]), btn);
     });
   });
   container.querySelectorAll(".del-exam").forEach(btn=>{
@@ -2585,12 +2794,14 @@ function buildUnitReport(rows){
     const se = series[i];
     const f = v => v === "" || v == null ? "—" : v;
     const pam = r && r.pam && r.pam.min !== "" && r.pam.min != null ? `${r.pam.min}–${r.pam.max} mmHg` : "—";
-    const dren = r && (r.drenos||[]).length ? r.drenos.map(d=>`${esc(d.label)} ${d.total}`).join(", ") + " mL" : "—";
+    // Drenos e hemodiálise só entram no relatório se tiveram débito (> 0 mL).
+    const drenosDeb = r ? (r.drenos||[]).filter(d=>Number(d.total) > 0) : [];
+    const dren = drenosDeb.length ? drenosDeb.map(d=>`${esc(d.label)} ${d.total}`).join(", ") + " mL" : "";
     const ctrl = r ? `
       <tr><td>PAM</td><td>${pam}</td></tr>
       <tr><td>Diurese</td><td>${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) + " mL" : "—"}</td></tr>
-      <tr><td>Drenos</td><td class="wrap">${dren}</td></tr>
-      <tr><td>Hemodiálise</td><td>${r.hd !== "" && r.hd != null ? r.hd + " mL" : "—"}</td></tr>
+      ${dren ? `<tr><td>Drenos</td><td class="wrap">${dren}</td></tr>` : ""}
+      ${Number(r.hd) > 0 ? `<tr><td>Hemodiálise</td><td>${r.hd} mL</td></tr>` : ""}
       <tr><td>Escape glic.</td><td class="wrap">${glicCell(r)}</td></tr>
       <tr><td>Balanço</td><td class="big">${r.balanco >= 0 ? "+" : ""}${r.balanco} mL</td></tr>`
       : `<tr><td colspan="2">Sem balanço salvo</td></tr>`;
@@ -2602,6 +2813,8 @@ function buildUnitReport(rows){
         return `<td class="${lvl||""}">${val}${lvl==="crit"?"!":""}</td>`;
       }).join("")}</tr>`).join("");
     const crit = exams.length ? examAlerts(exams).filter(a=>a.level==="crit").map(a=>esc(a.text)) : [];
+    const sf = sofa2Serie(exams, history).slice(-1)[0];
+    const sfTxt = sf && sf.total != null ? `<b>SOFA-2 medido ${sf.total}</b> (F ${sf.figado == null ? "—" : sf.figado} · R ${sf.rim == null ? "—" : sf.rim} · H ${sf.hemo == null ? "—" : sf.hemo}, ${sf.date.slice(0,5)})` : "";
     return `<div class="u-blk">
       <div class="u-head"><span class="u-leito">${esc(p.leito || "—")}</span><span class="u-nome">${esc(p.nome)}</span>
         <span class="u-meta">${p.atend ? "Atend. " + esc(p.atend) + " — " : ""}${r ? "balanço de " + esc(r.dataBal) : ""}</span></div>
@@ -2609,7 +2822,7 @@ function buildUnitReport(rows){
         <table class="u-ctrl"><colgroup><col style="width:19mm"><col></colgroup>${ctrl}</table>
         ${days.length ? `<table class="u-ex"><colgroup><col style="width:9mm">${UNIT_EX_KEYS.map(()=>"<col>").join("")}</colgroup><tr><th></th>${UNIT_EX_KEYS.map(k=>`<th>${k}</th>`).join("")}</tr>${exRows}</table>` : `<div style="font-size:8pt; color:#666;">Sem exames salvos.</div>`}
       </div>
-      <div class="u-crit">${crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""}</div>
+      <div class="u-crit">${[sfTxt, crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""].filter(Boolean).join(" · ")}</div>
     </div>`;
   };
 
