@@ -2389,8 +2389,8 @@ function buildPrintReport(p, history){
       <h2>Balanço do último plantão</h2>
       <div class="print-stat-grid">
         <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h)` : ""}</span>${Math.abs(latest.diurese)} mL</div>
-        ${(latest.drenos||[]).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
-        ${(latest.hd!=="" && latest.hd!=null) ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
+        ${(latest.drenos||[]).filter(d=>Number(d.total) > 0).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
+        ${Number(latest.hd) > 0 ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
         <div><span class="k">Balanço hídrico</span>${latest.balanco>=0?'+':''}${latest.balanco} mL</div>
         <div><span class="k">FC</span>${latest.fc.min}–${latest.fc.max} bpm</div>
         <div><span class="k">FR</span>${latest.fr.min}–${latest.fr.max} irpm</div>
@@ -2727,12 +2727,14 @@ function buildUnitReport(rows){
     const se = series[i];
     const f = v => v === "" || v == null ? "—" : v;
     const pam = r && r.pam && r.pam.min !== "" && r.pam.min != null ? `${r.pam.min}–${r.pam.max} mmHg` : "—";
-    const dren = r && (r.drenos||[]).length ? r.drenos.map(d=>`${esc(d.label)} ${d.total}`).join(", ") + " mL" : "—";
+    // Drenos e hemodiálise só entram no relatório se tiveram débito (> 0 mL).
+    const drenosDeb = r ? (r.drenos||[]).filter(d=>Number(d.total) > 0) : [];
+    const dren = drenosDeb.length ? drenosDeb.map(d=>`${esc(d.label)} ${d.total}`).join(", ") + " mL" : "";
     const ctrl = r ? `
       <tr><td>PAM</td><td>${pam}</td></tr>
       <tr><td>Diurese</td><td>${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) + " mL" : "—"}</td></tr>
-      <tr><td>Drenos</td><td class="wrap">${dren}</td></tr>
-      <tr><td>Hemodiálise</td><td>${r.hd !== "" && r.hd != null ? r.hd + " mL" : "—"}</td></tr>
+      ${dren ? `<tr><td>Drenos</td><td class="wrap">${dren}</td></tr>` : ""}
+      ${Number(r.hd) > 0 ? `<tr><td>Hemodiálise</td><td>${r.hd} mL</td></tr>` : ""}
       <tr><td>Escape glic.</td><td class="wrap">${glicCell(r)}</td></tr>
       <tr><td>Balanço</td><td class="big">${r.balanco >= 0 ? "+" : ""}${r.balanco} mL</td></tr>`
       : `<tr><td colspan="2">Sem balanço salvo</td></tr>`;
