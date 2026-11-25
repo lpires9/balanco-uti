@@ -1147,6 +1147,127 @@ function examAlertChips(alerts){
   return `<div style="margin:6px 0;">${alerts.map(a=>`<span class="alert-chip alert-${a.level === "crit" ? "warn" : "info"}">${a.level === "crit" ? "Crítico: " : ""}${a.text}</span>`).join("")}</div>`;
 }
 
+// ---------- SOFA-2: componentes medidos (fígado, rim, hemostasia) ----------
+// Ranzani et al., JAMA 2025;334(23):2090 (SOFA-2). Cérebro, respiratório e
+// cardiovascular dependem da avaliação à beira-leito e ficam em branco para o médico.
+// Regras do SOFA-2: pior valor do dia; depois do 1º dia, dia sem exame repete o último
+// valor (LOCF). Rim também usa a diurese (mL/kg/h, se o peso foi informado no balanço),
+// a hemodiálise registrada no balanço do mesmo dia e o critério de TRS (nota "p").
+function sofa2Figado(bt){ return bt == null ? null : bt <= 1.2 ? 0 : bt <= 3 ? 1 : bt <= 6 ? 2 : bt <= 12 ? 3 : 4; }
+function sofa2Creat(cr){ return cr == null ? null : cr <= 1.2 ? 0 : cr <= 2 ? 1 : cr <= 3.5 ? 2 : 3; }
+function sofa2Plaq(k){ return k == null ? null : k > 150 ? 0 : k > 100 ? 1 : k > 80 ? 2 : k > 50 ? 3 : 4; }
+
+// Diurese do balanço: maior período contínuo (h) abaixo de 0,5 e 0,3 mL/kg/h e em anúria.
+// Cada leitura cobre as horas desde a leitura anterior.
+function sofa2Diurese(rec){
+  const ser = rec && rec.series && rec.series.diureseHourly;
+  if(!rec || !rec.peso || !ser || !ser.length) return null;
+  const rel = computeDiureseRelativa(ser.map(p=>({hour:p.hour, value:Math.abs(p.value)})), rec.peso);
+  const run = pred => { let max = 0, cur = 0; rel.forEach(p=>{ if(p.mlkgh != null && pred(p)){ cur += p.intervalH; max = Math.max(max, cur); } else cur = 0; }); return max; };
+  const h05 = run(p=>p.mlkgh < 0.5), h03 = run(p=>p.mlkgh < 0.3), h0 = run(p=>p.value === 0);
+  const pts = (h03 >= 24 || h0 >= 12) ? 3 : h05 >= 12 ? 2 : h05 >= 6 ? 1 : 0;
+  const motivo = pts === 3 ? (h0 >= 12 ? `anúria ${h0}h` : `DU <0,3 por ${h03}h`) : pts ? `DU <0,5 por ${h05}h` : "";
+  return {pts, h05, h03, h0, motivo};
+}
+
+// Série diária do SOFA-2 parcial: [{date, figado, rim, hemo, total, mot:{...}, locf:{...}}]
+function sofa2Serie(exams, history){
+  const fmt = n => String(Math.round(n*100)/100).replace(".", ",");
+  const dias = {};
+  const put = (d, campo, v, pior) => {
+    if(!d || v == null || isNaN(v)) return;
+    const o = (dias[d] = dias[d] || {});
+    o[campo] = o[campo] == null ? v : pior(o[campo], v);
+  };
+  const addLab = (key, d, n) => {
+    if(key === "BT") put(d, "bt", n, Math.max);
+    else if(key === "CR") put(d, "cr", n, Math.max);
+    else if(key === "PLAQ") put(d, "plaq", n > 2000 ? n/1000 : n, Math.min);   // em mil/µL
+    else if(key === "K") put(d, "k", n, Math.max);
+  };
+  (exams||[]).forEach(e=>{
+    const day = String(e.coleta||"").split(" ")[0];
+    (e.items||[]).forEach(it=>{
+      addLab(it.key, day, it.num != null ? it.num : examNumBR(it.value));
+      (it.prevs||[]).forEach(pv=> addLab(it.key, pv.date, pv.num));
+      if(it.key === "GASO ART"){
+        const g = re => { const m = String(it.value).match(re); return m ? examNumBR(m[1]) : null; };
+        let ph = g(/\bPH\s+([\d.,]+)/i); if(ph != null && ph > 14) ph = ph/1000;
+        put(day, "ph", ph, Math.min);
+        put(day, "hco3", g(/\bHCO3\s+([\d.,]+)/i), Math.min);
+      }
+    });
+  });
+  // Balanço do mesmo dia: diurese e hemodiálise.
+  const balDia = {};
+  (history||[]).forEach(r=>{ if(dateBR(r.dataBal)) balDia[r.dataBal] = r; });
+  const datas = [...new Set(Object.keys(dias).concat(Object.keys(balDia)))]
+    .filter(d=>dateBR(d)).sort((a,b)=> coletaKey(a).localeCompare(coletaKey(b)));
+  let ult = {bt:null, cr:null, plaq:null};
+  let temLab = false;
+  const out = [];
+  datas.forEach(d=>{
+    const o = dias[d] || {};
+    const locf = {};
+    ["bt","cr","plaq"].forEach(k=>{ if(o[k] != null) ult[k] = o[k]; else if(ult[k] != null) locf[k] = true; });
+    if(o.bt != null || o.cr != null || o.plaq != null) temLab = true;
+    if(!temLab) return;   // começa no primeiro dia com exame
+    const mot = {};
+    const figado = sofa2Figado(ult.bt); if(ult.bt != null) mot.figado = `BT ${fmt(ult.bt)}`;
+    const hemo = sofa2Plaq(ult.plaq); if(ult.plaq != null) mot.hemo = `PLAQ ${Math.round(ult.plaq)}k`;
+    let rim = sofa2Creat(ult.cr); if(ult.cr != null) mot.rim = `CR ${fmt(ult.cr)}`;
+    const bal = balDia[d];
+    const du = sofa2Diurese(bal);
+    if(du && du.pts > (rim == null ? -1 : rim)){ rim = du.pts; mot.rim = du.motivo; }
+    const hd = bal && bal.hd !== "" && bal.hd != null && Number(bal.hd) > 0;
+    const disturbio = (o.k != null && o.k >= 6) || (o.ph != null && o.hco3 != null && o.ph <= 7.2 && o.hco3 <= 12);
+    const disfRenal = (ult.cr != null && ult.cr > 1.2) || (du && du.h03 > 6);
+    if(hd){ rim = 4; mot.rim = `hemodiálise ${bal.hd} mL`; }
+    else if(disturbio && disfRenal){
+      rim = 4;
+      mot.rim = "critério de TRS: " + (o.k != null && o.k >= 6 ? `K ${fmt(o.k)}` : `pH ${fmt(o.ph)}, HCO3 ${fmt(o.hco3)}`);
+    }
+    const vals = [figado, rim, hemo].filter(v=>v != null);
+    out.push({date:d, figado, rim, hemo, total: vals.length ? vals.reduce((a,b)=>a+b,0) : null, n: vals.length, mot, locf});
+  });
+  return out;
+}
+
+function sofa2Texto(s){
+  if(!s) return "";
+  const c = (v, m) => v == null ? "_" : `${v}${m ? ` (${m})` : ""}`;
+  return (`SOFA-2 (${s.date.slice(0,5)}): CÉREBRO _ | RESPIRATÓRIO _ | CARDIOVASCULAR _ | `
+    + `FÍGADO ${c(s.figado, s.mot.figado)} | RIM ${c(s.rim, s.mot.rim)} | HEMOSTASIA ${c(s.hemo, s.mot.hemo)} | `
+    + `PARCIAL (LABS) ${s.total == null ? "_" : s.total} | TOTAL _`).toUpperCase();
+}
+
+function buildSofaSection(pid, exams, history){
+  const serie = sofa2Serie(exams, history);
+  if(!serie.length) return "";
+  const dias = serie.slice(-5);
+  const esc = t => String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");
+  const cell = (s, campo, locfKey) => {
+    const v = s[campo];
+    if(v == null) return `<td class="nd">·</td>`;
+    const cor = v >= 3 ? "color:var(--crit); font-weight:700;" : v >= 1 ? "color:var(--warn); font-weight:700;" : "";
+    const it = locfKey && s.locf[locfKey] ? "font-style:italic; opacity:.75;" : "";
+    return `<td style="${cor}${it}" title="${esc(s.mot[campo] || "")}${locfKey && s.locf[locfKey] ? " (repetido do último exame)" : ""}">${v}</td>`;
+  };
+  const ult = serie[serie.length-1];
+  return `<div class="trend-section">
+    <div class="col-head"><span>SOFA-2 medido <small style="font-weight:400; color:var(--muted);">fígado, rim, hemostasia</small></span>
+      <button class="del-btn copy-sofa" data-id="${pid}">Copiar SOFA-2</button></div>
+    <div style="overflow-x:auto;"><table class="exam-table">
+      <tr><th></th>${dias.map(s=>`<th>${s.date.slice(0,5)}</th>`).join("")}</tr>
+      <tr><td class="k">Fígado</td>${dias.map(s=>cell(s,"figado","bt")).join("")}</tr>
+      <tr><td class="k">Rim</td>${dias.map(s=>cell(s,"rim", s.mot.rim && /^CR/.test(s.mot.rim) ? "cr" : null)).join("")}</tr>
+      <tr><td class="k">Hemostasia</td>${dias.map(s=>cell(s,"hemo","plaq")).join("")}</tr>
+      <tr><td class="k">Parcial</td>${dias.map(s=>`<td style="font-weight:700;">${s.total == null ? "·" : s.total}</td>`).join("")}</tr>
+    </table></div>
+    <div class="hint">Último: ${esc([ult.mot.figado, ult.mot.rim, ult.mot.hemo].filter(Boolean).join(" · ") || "—")}. Cérebro, respiratório e cardiovascular: avaliar à beira-leito. Itálico: sem exame no dia, repete o último. Rim usa também diurese (se peso informado) e hemodiálise do balanço do mesmo dia.</div>
+  </div>`;
+}
+
 // Tabela de comparação: linhas = exames, colunas = dias (últimos 8).
 // Tabela da tela: exames principais (mesmos da impressão) + qualquer outro alterado;
 // o restante fica em "ver todos".
@@ -1659,10 +1780,10 @@ async function fillReview(d){
     implausibleList.innerHTML = "";
   }
 
-  // Convenience: pre-fill weight/dilution from the last time they were entered
-  // (still fully editable — useful since the same patient often keeps the
-  // same prescription across several shifts).
-  const lastSettings = JSON.parse(await storeGet("last_peso_settings") || "{}");
+  // Peso e diluição da nora vêm do último balanço DESTE paciente (nunca de outro:
+  // um peso errado distorce dose de nora, diurese em mL/kg/h e o SOFA-2 renal).
+  const pidRev = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), d.atend, d.nome || "Paciente sem nome");
+  const lastSettings = JSON.parse(await storeGet("peso_" + pidRev) || "{}");
   document.getElementById("rPeso").value = lastSettings.peso ?? "";
   document.getElementById("rNoraMg").value = lastSettings.noraMg ?? "";
   document.getElementById("rNoraMl").value = lastSettings.noraMl ?? "";
@@ -1809,7 +1930,6 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   const noraMl = parseFloat(document.getElementById("rNoraMl").value) || null;
   const balancoVal = parseFloat(document.getElementById("rBalanco").value) || 0;
 
-  await storeSet("last_peso_settings", JSON.stringify({peso, noraMg, noraMl}));
 
   const vaso = (lastParsedSeries && peso)
     ? buildVasopressorAnalysis(lastParsedSeries, peso, noraMg, noraMl, balancoVal)
@@ -1841,6 +1961,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
   const atend = document.getElementById("rAtend").value.trim();
   const patientId = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), atend, nome);
 
+  if(peso || noraMg || noraMl) await storeSet("peso_" + patientId, JSON.stringify({peso, noraMg, noraMl}));
   let history = await storeGet("hist_" + patientId);
   history = history ? JSON.parse(history) : [];
   history.push(record);
@@ -2367,7 +2488,7 @@ async function renderPatients(){
                    : `<div class="col-empty">Sem balanço salvo. Solte o PDF do balanço do MV.</div>`}
           ${buildTrendSection(history)}
         </div>
-        <div class="pt-col">${buildExamSection(p.id, exams)}${latest ? buildVasoSection(latest) : ""}</div>
+        <div class="pt-col">${buildExamSection(p.id, exams)}${buildSofaSection(p.id, exams, history)}${latest ? buildVasoSection(latest) : ""}</div>
       </div>
       ${history.length > 1 ? `<details class="mini older"><summary>Plantões anteriores (${history.length-1})</summary>
         ${history.slice(0,-1).map((r,i)=>({r,i})).reverse().map(({r,i})=>`<div class="record">${recHead(r,i)}${recAlerts(r)}${buildRecordTiles(r)}</div>`).join("")}
@@ -2388,6 +2509,7 @@ async function renderPatients(){
     await storeSet("index_pacientes", JSON.stringify(index));
     localStorage.removeItem(STORAGE_PREFIX + "hist_" + id);
     localStorage.removeItem(STORAGE_PREFIX + "exam_" + id);
+    localStorage.removeItem(STORAGE_PREFIX + "peso_" + id);
     await logEvent(motivo === "alta" ? "alta — vínculo removido" : "paciente excluído — vínculo removido", pDel ? pDel.cod : null, pDel ? pDel.leito : null, "");
     renderPatients();
   };
@@ -2419,6 +2541,15 @@ async function renderPatients(){
       const list = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
       const e = list[parseInt(btn.dataset.idx)];
       if(e) copyToClipboard(e.text, btn);
+    });
+  });
+  container.querySelectorAll(".copy-sofa").forEach(btn=>{
+    btn.addEventListener("click", async (ev)=>{
+      ev.preventDefault(); ev.stopPropagation();
+      const ex = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
+      const hi = JSON.parse(await storeGet("hist_" + btn.dataset.id) || "[]");
+      const s = sofa2Serie(ex, hi);
+      if(s.length) copyToClipboard(sofa2Texto(s[s.length-1]), btn);
     });
   });
   container.querySelectorAll(".del-exam").forEach(btn=>{
@@ -2602,6 +2733,8 @@ function buildUnitReport(rows){
         return `<td class="${lvl||""}">${val}${lvl==="crit"?"!":""}</td>`;
       }).join("")}</tr>`).join("");
     const crit = exams.length ? examAlerts(exams).filter(a=>a.level==="crit").map(a=>esc(a.text)) : [];
+    const sf = sofa2Serie(exams, history).slice(-1)[0];
+    const sfTxt = sf && sf.total != null ? `<b>SOFA-2 medido ${sf.total}</b> (F ${sf.figado == null ? "—" : sf.figado} · R ${sf.rim == null ? "—" : sf.rim} · H ${sf.hemo == null ? "—" : sf.hemo}, ${sf.date.slice(0,5)})` : "";
     return `<div class="u-blk">
       <div class="u-head"><span class="u-leito">${esc(p.leito || "—")}</span><span class="u-nome">${esc(p.nome)}</span>
         <span class="u-meta">${p.atend ? "Atend. " + esc(p.atend) + " — " : ""}${r ? "balanço de " + esc(r.dataBal) : ""}</span></div>
@@ -2609,7 +2742,7 @@ function buildUnitReport(rows){
         <table class="u-ctrl"><colgroup><col style="width:19mm"><col></colgroup>${ctrl}</table>
         ${days.length ? `<table class="u-ex"><colgroup><col style="width:9mm">${UNIT_EX_KEYS.map(()=>"<col>").join("")}</colgroup><tr><th></th>${UNIT_EX_KEYS.map(k=>`<th>${k}</th>`).join("")}</tr>${exRows}</table>` : `<div style="font-size:8pt; color:#666;">Sem exames salvos.</div>`}
       </div>
-      <div class="u-crit">${crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""}</div>
+      <div class="u-crit">${[sfTxt, crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""].filter(Boolean).join(" · ")}</div>
     </div>`;
   };
 
