@@ -998,7 +998,48 @@ function enqueuePdf(file){
 function isExamPdf(lineObjects){
   const t = norm(lineObjects.map(l=>l.text).join("\n"));
   if(t.includes("TOTAL DE GANHOS") || t.includes("BALANCO HIDRICO")) return false;
+  if(/GASOMETR|GASIMETR/.test(t) && /\bP\s?CO2\b|\bPACO2\b|\bHCO3\b|BICARBONATO/.test(t)) return true;
   return /\bMATERIAL\b/.test(t) && (/RESULTADO/.test(t) || /VALOR(ES)? DE REFERENCIA/.test(t));
+}
+
+// ---------- Gasometria ----------
+// Rótulos (texto normalizado, início da linha). Mais específico primeiro.
+const GASO_PARAMS = [
+  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)\b(?!\s*URIN)/],
+  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))\b/],
+  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))\b/],
+  ["HCO3", /^(HCO3|BICARBONATO)(?!\S*\s*(STD|PADRAO|STANDARD))/],
+  ["BE",   /^(BE|B\.E\.?|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)\b/],
+  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))\b/],   // exige O2: não confundir com saturação de transferrina
+  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)\b/]
+];
+// Valor da linha do rótulo: o número logo após o rótulo (ou após ":"); se a
+// linha só tem o rótulo, o primeiro número da linha seguinte.
+// Nunca pega o "2" de pCO2/pO2/SO2 nem o "3" de HCO3: o rótulo é removido antes.
+function gasoValor(N, i, re){
+  const numRe = /([<>]?\s*[-+]?\d+(?:[.,]\d+)?)/;
+  const m = N[i].match(re);
+  let rest = N[i].slice(m[0].length);
+  if(rest.includes(":")) rest = rest.slice(rest.indexOf(":") + 1);
+  let v = rest.match(numRe);
+  if(!v && i+1 < N.length && /^\s*[<>]?\s*[-+]?\d/.test(N[i+1])) v = N[i+1].match(numRe);
+  return v ? v[1].replace(/\s+/g,"").replace(/^\+/,"") : null;
+}
+// Lê os parâmetros de um trecho de linhas normalizadas. Retorna {PH:"7,21", ...}.
+function gasoScan(N){
+  const out = {};
+  for(let i=0;i<N.length;i++){
+    const t = N[i].trim().replace(/^[*•\-\s]+/,"");
+    for(const [k, re] of GASO_PARAMS){
+      if(out[k] != null || !re.test(t)) continue;
+      const v = gasoValor([...N.slice(0,i), t, ...N.slice(i+1)], i, re);
+      if(v != null){ out[k] = v; break; }
+    }
+  }
+  return out;
+}
+function gasoTexto(vals){
+  return GASO_PARAMS.map(([k])=>k).filter(k=>vals[k] != null).map(k=> k + " " + vals[k]).join(" | ");
 }
 
 // Abreviações usuais em evolução de UTI. A ordem importa (mais específico primeiro).
@@ -1201,7 +1242,7 @@ function sofa2Serie(exams, history){
     (e.items||[]).forEach(it=>{
       addLab(it.key, day, it.num != null ? it.num : examNumBR(it.value));
       (it.prevs||[]).forEach(pv=> addLab(it.key, pv.date, pv.num));
-      if(it.key === "GASO ART"){
+      if(/^GASO ART/.test(it.key)){
         const g = re => { const m = String(it.value).match(re); return m ? examNumBR(m[1]) : null; };
         let ph = g(/\bPH\s+([\d.,]+)/i); if(ph != null && ph > 14) ph = ph/1000;
         put(day, "ph", ph, Math.min);
@@ -1342,6 +1383,7 @@ function parseExames(lineObjects){
       if(j>=0) starts.push(j);
     }
   }
+  const gasos = [];   // gasometrias encontradas: {tipo, vals}
   const blocks = starts.map((st, k)=>({title: lines[st].trim(), tn: N[st], from: st, to: k+1<starts.length ? starts[k+1] : lines.length}));
 
   const add = (key, label, value, group, prev, extra) => {
@@ -1395,14 +1437,24 @@ function parseExames(lineObjects){
       if(ra) add("RATIO","RATIO", examNum(ra.raw.replace(/^[^\d]*/,"")), "coag");
       return;
     }
-    if(/GASOMETRIA/.test(b.tn)){
-      const tipo = /VENOSA/.test(b.tn) ? "GASO VEN" : "GASO ART";
-      const parts = [];
-      [["PH",/^PH\b/],["PCO2",/^PCO2\b/],["PO2",/^PO2\b/],["HCO3",/^HCO3|^BICARBONATO/],["BE",/^BE\b|^EXCESSO DE BASE|^BASE EXCESS/],["SAT",/^SAT|^SO2/],["LAC",/^LACTATO/]].forEach(([k,re])=>{
-        const f = find(re); if(f){ const v = examNum(f.raw.replace(/^[^\d<>-]*(?=[<>-]?\d)/,"")); if(v!=null) parts.push(k + " " + v); }
-      });
-      if(parts.length) add(tipo, tipo, parts.join(" | "), "gaso");
+    if(/GASOMETR|GASIMETR|GASES (ARTERIA|VENOS|SANGU)/.test(b.tn)){
+      const tipo = /VENOS/.test(b.tn) || bodyN.some(l=>/^MATERIAL\b.*VENOS/.test(l)) ? "GASO VEN" : "GASO ART";
+      const vals = gasoScan(bodyN);
+      if(Object.keys(vals).length) gasos.push({tipo, vals});
       return;
+    }
+    // Laudo com um bloco por parâmetro da gasometria (título "PH", "PCO2"...).
+    const gp = GASO_PARAMS.find(([k, re]) => k !== "LAC" && re.test(b.tn.trim()));
+    if(gp){
+      const r0 = bodyN.find(l=>/^RESULTADO\b/.test(l));
+      const vals = r0 ? gasoScan([gp[0] + " " + r0.replace(/^RESULTADO\b[\s.:]*/,"")]) : gasoScan([b.tn.trim(), ...bodyN]);
+      if(vals[gp[0]] != null){
+        const tipo = /VENOS/.test(b.tn) || bodyN.some(l=>/^MATERIAL\b.*VENOS/.test(l)) ? "GASO VEN" : "GASO ART";
+        let g = gasos.find(x=>x.tipo === tipo && x.avulso);
+        if(!g){ g = {tipo, vals:{}, avulso:true}; gasos.push(g); }
+        g.vals[gp[0]] = vals[gp[0]];
+        return;
+      }
     }
     // Genérico: "Resultado: valor"
     const r = find(/^RESULTADO\b[\s.:]*[<>]?\s*-?\d/);
@@ -1416,6 +1468,21 @@ function parseExames(lineObjects){
       const tfg = find(/^OBSERVACAO:\s*\d+(?:[.,]\d+)?\s*$/);
       if(tfg) add("TFG", "TFG", examNum(tfg.raw.replace(/^[^\d]*/,"")), "renal");
     }
+  });
+  // Laudo só de gasometria, sem blocos "Material:" (ex.: impresso do gasômetro).
+  if(!gasos.length && !blocks.length && /GASOMETR|GASIMETR/.test(N.join(" "))){
+    const vals = gasoScan(N);
+    if(Object.keys(vals).length >= 2) gasos.push({tipo: N.some(l=>/VENOS/.test(l)) ? "GASO VEN" : "GASO ART", vals});
+  }
+  gasos.forEach((g, i)=>{
+    const n = gasos.filter((x,j)=> j < i && x.tipo === g.tipo).length;
+    const key = n ? g.tipo + " " + (n+1) : g.tipo;
+    const ks = Object.keys(g.vals);
+    // Parâmetro avulso sem os demais (ex.: bicarbonato sérico) não vira "gasometria".
+    if(g.avulso && ks.length < 2){ ks.forEach(k=> add(k, k, g.vals[k], k === "HCO3" ? "eletro" : "outros")); return; }
+    add(key, g.tipo, gasoTexto(g.vals), "gaso");
+    // Lactato da gasometria entra também na série de lactato (tabela, avisos).
+    if(g.vals.LAC != null && !out.items.some(it=>it.key === "LAC")) add("LAC", "LAC", g.vals.LAC, "infl", null, {hidden:true});
   });
   return out;
 }
