@@ -537,8 +537,18 @@ function nearestHourColumn(x, header){
 // that row's own "Total" column value, if it has one). Falls back to
 // checking the next couple of lines for rows whose label wraps (e.g.
 // "FREQUENCIA RESPIRATORIA -" / values / "RPM" across 3 lines).
+// Uma linha "é" do rótulo procurado se contém uma das palavras-chave (texto) ou
+// casa com uma delas (RegExp, testada no texto normalizado). A linha de
+// identificação ("Paciente: ...") nunca conta: um nome como PÂMELA continha "PAM".
+function lineHasKeyword(text, keywords){
+  if(/PACIENTE:/i.test(text)) return false;
+  const up = text.toUpperCase();
+  return keywords.some(k => k instanceof RegExp ? k.test(norm(text)) : up.includes(k.toUpperCase()));
+}
+const PAM_KEYS = ["P.A.M", /\bPAM\b/];
+
 function extractSeries(lineObjects, keywords, lookahead=3, soContinuacao=false){
-  const idx = lineObjects.findIndex(lo => keywords.some(k => lo.text.toUpperCase().includes(k.toUpperCase())));
+  const idx = lineObjects.findIndex(lo => lineHasKeyword(lo.text, keywords));
   if(idx === -1) return [];
   const header = findHeaderForRow(lineObjects, idx);
   if(!header) return [];
@@ -654,10 +664,13 @@ function computeInercia(doseDeltaSeries, pamSeries, ganhosSeries){
   const t = CLINICAL_THRESHOLDS;
   const pamByHour = {}; pamSeries.forEach(p=>{ pamByHour[p.hour] = p.value; });
   const ganhosByHour = {}; ganhosSeries.forEach(p=>{ ganhosByHour[p.hour] = p.value; });
-  return doseDeltaSeries.map((p,i)=>{
+  // "Entradas subindo" compara com a leitura ANTERIOR DE GANHOS (não com a hora
+  // da leitura anterior de nora, que pode não ter ganhos registrados).
+  const ganhosPrevByHour = {}; ganhosSeries.forEach((p,j)=>{ if(j>0) ganhosPrevByHour[p.hour] = ganhosSeries[j-1].value; });
+  return doseDeltaSeries.map((p)=>{
     const pamVal = pamByHour[p.hour];
     const ganhosVal = ganhosByHour[p.hour];
-    const ganhosPrevVal = i>0 ? ganhosByHour[doseDeltaSeries[i-1].hour] : undefined;
+    const ganhosPrevVal = ganhosPrevByHour[p.hour];
 
     const noraCond = p.trend === "descendo" || (p.trend === "estável" && p.dose!=null && p.dose <= t.noraLowDose);
     const pamCond = pamVal!=null && pamVal >= t.pamMin;
@@ -678,7 +691,8 @@ function buildVasopressorAnalysis(rawSeries, pesoKg, noraMg, noraMl, balancoTota
   const doseSeries = computeNoraDose(rawSeries.nora, noraMg, noraMl, pesoKg);
   const deltaSeries = withDeltaTrend(doseSeries);
   const inerciaSeries = computeInercia(deltaSeries, rawSeries.pam, rawSeries.ganhosHourly);
-  const diureseRel = computeDiureseRelativa(rawSeries.diureseHourly, pesoKg);
+  // Diurese pode vir com sinal negativo (perda) no PDF: mL/kg/h é sempre positivo.
+  const diureseRel = computeDiureseRelativa(rawSeries.diureseHourly.map(p=>({hour:p.hour, value:Math.abs(p.value)})), pesoKg);
 
   const horasInercia = inerciaSeries.reduce((sum,p,i)=>{
     if(!p.inerciaVolemica) return sum;
@@ -718,7 +732,7 @@ function extractDecimals(line){
 }
 
 function getRowNumbers(lines, keywords, lookahead=2){
-  const idx = lines.findIndex(l => keywords.some(k => l.toUpperCase().includes(k.toUpperCase())));
+  const idx = lines.findIndex(l => lineHasKeyword(l, keywords));
   if(idx === -1) return [];
   let nums = extractDecimals(lines[idx]);
   let i=1;
@@ -768,6 +782,13 @@ function minMax(arr){
   if(!arr.length) return {min:"", max:""};
   return {min: Math.min(...arr), max: Math.max(...arr)};
 }
+
+// Escapa texto vindo do PDF/usuário antes de entrar no HTML.
+function escHtml(t){
+  return String(t == null ? "" : t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+// Número de um campo: vazio/inválido → "" (sem dado). 0 é um valor válido (ex.: anúria).
+function numOuVazio(v){ const n = parseFloat(v); return isNaN(n) ? "" : n; }
 
 // Uppercase + strip accents, for accent-insensitive label matching.
 function norm(s){
@@ -869,7 +890,7 @@ function parseBalanco(lineObjects){
   // to the hour column it's printed under, so trends reflect real time-of-day.
   const fcSeries = extractSeries(lineObjects, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"]);
   const frSeries = extractSeries(lineObjects, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"]);
-  const pamSeries = extractSeries(lineObjects, ["P.A.M","PAM"]);
+  const pamSeries = extractSeries(lineObjects, PAM_KEYS);
   const satSeries = extractSeries(lineObjects, ["SPO2","SATO2"]);
   const tempSeries = extractSeries(lineObjects, ["TEMPERATURA"]);
   const glicSeries = extractSeries(lineObjects, ["GLICEMIA"]);
@@ -903,7 +924,7 @@ function parseBalanco(lineObjects){
 
   const fcValid = processVital("FC", fcSeries, ["FREQUENCIA CARDIACA","FREQUÊNCIA CARDÍACA"], PLAUSIBLE_RANGES.fc);
   const frValid = processVital("FR", frSeries, ["FREQUENCIA RESPIRATORIA","FREQUÊNCIA RESPIRAT"], PLAUSIBLE_RANGES.fr);
-  const pamValid = processVital("PAM", pamSeries, ["P.A.M","PAM"], PLAUSIBLE_RANGES.pam);
+  const pamValid = processVital("PAM", pamSeries, PAM_KEYS, PLAUSIBLE_RANGES.pam);
   const satValid = processVital("SatO2", satSeries, ["SPO2","SATO2"], PLAUSIBLE_RANGES.sat);
   const tempValid = processVital("Temp", tempSeries, ["TEMPERATURA"], PLAUSIBLE_RANGES.temp);
   const glicValid = processVital("Glicemia", glicSeries, ["GLICEMIA"], PLAUSIBLE_RANGES.glic);
@@ -1170,6 +1191,8 @@ function examSeries(entries){
   // as anteriores vão em "outros" (aparecem ao passar o mouse na tabela).
   const put = (key, date, num, value, src, hora) => {
     if(num == null || !date) return;
+    // Plaquetas: laudo em mil/µL ("150") vira /µL (150000), como os limites e o relatório esperam.
+    if(key === "PLAQ" && num <= 2000) num = num * 1000;
     const byDate = (map[key] = map[key] || {});
     const old = byDate[date];
     if(old && old.src === "pdf" && src === "lab") return;
@@ -1438,7 +1461,8 @@ function parseExames(lineObjects){
   if((m = all.match(/Atendimento:\s*(\d+)/))) out.atend = m[1];
   if((m = all.match(/Data da Libera\S*\s*:?\s*(\d{2}\/\d{2}\/\d{4})/))) out.liberacao = m[1];
   const coletas = [...all.matchAll(/Coletado em:\s*(\d{2}\/\d{2}\/\d{4})\s*(?:às|as)?\s*(\d{2}:\d{2})?/gi)].map(x=>x[1] + (x[2] ? " " + x[2] : ""));
-  out.coleta = coletas.length ? coletas.sort()[0] : out.liberacao;
+  // Ordena pela data real (aaaammddhhmm): ordenar o texto "dd/mm/aaaa" erra na virada do mês.
+  out.coleta = coletas.length ? coletas.sort((a,b)=> coletaKey(a).localeCompare(coletaKey(b)))[0] : out.liberacao;
 
   // Header/rodapé repetidos em cada página não fazem parte dos blocos.
   const isNoise = t => /^(PACIENTE:|REGISTRO:|CONVENIO:|N. ATENDIMENTO|DATA DA LIBERA|LOCAL DE ENTRADA|ASSINADO ELETRONICAMENTE|OS EXAMES LABORATORIAIS|FISIOLOGICAS|OS RESULTADOS COM|SE NECESSARIO|AVENIDA|CEP:|CNPJ)/.test(t) || /CRB[MF]\s*\d+\s*$/.test(t) || /^[¯_\-\s]+$/.test(t);
@@ -1626,9 +1650,17 @@ async function unirDuplicados(){
     const leito = comHist.map(x=>x.p.leito).find(l=>l && l !== "—") || "—";
     await storeSet("hist_" + prim.p.id, JSON.stringify(hist));
     if(exams.length) await storeSet("exam_" + prim.p.id, JSON.stringify(exams));
+    // Peso/diluição da nora: mantém o do cadastro principal; se não tiver, usa o de um dos outros.
+    if(!(await storeGet("peso_" + prim.p.id))){
+      for(const x of comHist.slice(1)){
+        const pw = await storeGet("peso_" + x.p.id);
+        if(pw){ await storeSet("peso_" + prim.p.id, pw); break; }
+      }
+    }
     for(const x of comHist.slice(1)){
       localStorage.removeItem(STORAGE_PREFIX + "hist_" + x.p.id);
       localStorage.removeItem(STORAGE_PREFIX + "exam_" + x.p.id);
+      localStorage.removeItem(STORAGE_PREFIX + "peso_" + x.p.id);
     }
     const outros = new Set(comHist.slice(1).map(x=>x.p.id));
     index = index.filter(p=>!outros.has(p.id)).map(p => p.id === prim.p.id ? {...p, leito, atends:[...atends], atend: p.atend || [...atends][0] || ""} : p);
@@ -1781,11 +1813,15 @@ async function listDirFiles(dir){
 function setWatchStatus(html){ document.getElementById("watchStatus").innerHTML = html; }
 
 async function scanWatchDir(initial){
-  if(!watchDir) return;
+  // Guarda a pasta desta varredura: se o monitoramento for parado no meio
+  // (watchDir vira null), a varredura termina sem mexer em mais nada.
+  const dir = watchDir;
+  if(!dir) return;
   let files;
-  try{ files = await listDirFiles(watchDir); }
-  catch(e){ stopWatch("Monitoramento parado: " + e.message + ". Clique para retomar."); return; }
+  try{ files = await listDirFiles(dir); }
+  catch(e){ if(watchDir === dir) stopWatch("Monitoramento parado: " + e.message + ". Clique para retomar."); return; }
   for(const h of files){
+    if(watchDir !== dir) return;
     let f;
     try{ f = await h.getFile(); }catch(e){ continue; }
     const key = h.name, sig = f.lastModified + ":" + f.size;
@@ -1803,7 +1839,7 @@ async function scanWatchDir(initial){
     enqueuePdf(new File([buf], f.name, {type:"application/pdf"}));
     if(document.getElementById("watchDelete").checked){
       if(watchCanDelete){
-        try{ await watchDir.removeEntry(h.name); watchSeen.delete(key); watchDeleted++; }
+        try{ await dir.removeEntry(h.name); watchSeen.delete(key); watchDeleted++; }
         catch(e){ watchDeleteErr = e.message || String(e); }
       } else watchDeleteErr = "sem permissão de escrita na pasta";
     }
@@ -1811,7 +1847,8 @@ async function scanWatchDir(initial){
   const delInfo = document.getElementById("watchDelete").checked
     ? (watchDeleteErr ? `, mas não consegui apagar da pasta (${watchDeleteErr})` : `, ${watchDeleted} apagado(s) da pasta`)
     : "";
-  setWatchStatus(`Monitorando a pasta <b>${watchDir.name}</b>: ${watchCount} PDF(s) lido(s)${delInfo}.`);
+  if(watchDir !== dir) return;
+  setWatchStatus(`Monitorando a pasta <b>${escHtml(dir.name)}</b>: ${watchCount} PDF(s) lido(s)${delInfo}.`);
 }
 
 async function startWatch(dir){
@@ -1895,7 +1932,8 @@ async function handleFile(file){
     const buf = await file.arrayBuffer();
     const lineObjects = await pdfToLineObjects(buf);
     if(isExamPdf(lineObjects)){
-      showExamReview(parseExames(lineObjects));
+      // await: um erro aqui precisa cair no catch, senão a fila fica travada.
+      await showExamReview(parseExames(lineObjects));
       return;
     }
     const data = parseBalanco(lineObjects);
@@ -1915,6 +1953,8 @@ async function handleFile(file){
     if(batch.on) batch.err.push(`${file.name}: ${err && err.message ? err.message : err}`);
     statusEl.className = "err";
     reviewCard.style.display = "none";
+    document.getElementById("examCard").style.display = "none";
+    currentExam = null;
     nextInQueue();
   }
 }
@@ -1991,8 +2031,8 @@ function currentReviewRecord(){
     ...readExtraFields(),
     nome: v("rNome"), leito: v("rLeito"), atend: v("rAtend"), dataBal: v("rData"),
     ganhos: parseFloat(v("rGanhos")) || 0, perdas: parseFloat(v("rPerdas")) || 0,
-    diurese: parseFloat(v("rDiurese")) || "",
-    balanco: parseFloat(v("rBalanco")) || "",
+    diurese: numOuVazio(v("rDiurese")),
+    balanco: numOuVazio(v("rBalanco")),
     fc: {min:v("rFcMin"), max:v("rFcMax")}, fr: {min:v("rFrMin"), max:v("rFrMax")},
     pam: {min:v("rPamMin"), max:v("rPamMax")}, sat: {min:v("rSatMin"), max:v("rSatMax")},
     temp: {min:v("rTempMin"), max:v("rTempMax")},
@@ -2112,7 +2152,7 @@ document.getElementById("saveBtn").addEventListener("click", async ()=>{
 
   const record = {
     dataBal: document.getElementById("rData").value.trim() || "(sem data)",
-    diurese: parseFloat(document.getElementById("rDiurese").value) || 0,
+    diurese: numOuVazio(document.getElementById("rDiurese").value),   // "" = não registrada (não vira 0 mL)
     ganhos: parseFloat(document.getElementById("rGanhos").value) || 0,
     perdas: parseFloat(document.getElementById("rPerdas").value) || 0,
     balanco: balancoVal,
@@ -2303,9 +2343,9 @@ function buildRecordTiles(r){
   const t = (cls, label, val, chart, param) => `<div class="tile ${cls}"${param && views[param] ? ` data-param="${param}" title="Ver hora a hora"` : ""}><div class="tl">${label}</div><div class="tv">${val}</div>${chart || ""}</div>`;
   const tiles = [
     t("fluid", "Balanço", `<b class="${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco}</b><span> mL</span>`, "", "balanco"),
-    t("fluid", "Diurese" + (r.horas ? ` (${r.horas}h)` : ""), `${Math.abs(r.diurese)}<span> mL</span>`, "", "diurese")
+    t("fluid", "Diurese" + (r.horas ? ` (${r.horas}h)` : ""), r.diurese !== "" && r.diurese != null ? `${Math.abs(r.diurese)}<span> mL</span>` : "—", "", "diurese")
   ];
-  (r.drenos||[]).forEach(d=> tiles.push(t("fluid", d.label, `${d.total}<span> mL</span>`)));
+  (r.drenos||[]).forEach(d=> tiles.push(t("fluid", escHtml(d.label), `${escHtml(d.total)}<span> mL</span>`)));
   if(r.hd !== "" && r.hd != null) tiles.push(t("fluid", "Hemodiálise", `${r.hd}<span> mL</span>`));
   tiles.push(
     t("pam", "PAM", rng(r.pam,"mmHg"), spark("pam","#E0564A"), "pam"),
@@ -2313,8 +2353,8 @@ function buildRecordTiles(r){
     t("sat", "SatO2", rng(r.sat,"%"), spark("sat","#23A3BF"), "sat"),
     t("temp", "Temp", rng(r.temp,"°C"), spark("temp","#D08A1E"), "temp"),
     t("", "FR", rng(r.fr,"irpm"), spark("fr","#8A9AA5"), "fr"),
-    t("glic", "Glicemias", (r.glic||[]).length ? r.glic.join(", ") : "—", spark("glic","#8C7FD0"), "glic"),
-    t("", "Dor / Evacuação", `${r.dorSim || "—"} / ${evacText(r)}`)
+    t("glic", "Glicemias", (r.glic||[]).length ? escHtml(r.glic.join(", ")) : "—", spark("glic","#8C7FD0"), "glic"),
+    t("", "Dor / Evacuação", `${escHtml(r.dorSim || "—")} / ${evacText(r)}`)
   );
   return `<div class="rec-tiles"><div class="tiles">${tiles.join("")}</div>${Object.values(views).join("")}</div>`;
 }
@@ -2610,8 +2650,8 @@ function buildPrintReport(p, history, exams){
 
   return `
     <div class="print-header">
-      <h1>${p.nome}</h1>
-      <div class="meta">Leito ${p.leito}${p.atend ? " · Atendimento " + p.atend : ""} · Período: ${periodo} · Impresso em ${new Date().toLocaleDateString('pt-BR')}</div>
+      <h1>${escHtml(p.nome)}</h1>
+      <div class="meta">Leito ${escHtml(p.leito)}${p.atend ? " · Atendimento " + escHtml(p.atend) : ""} · Período: ${periodo} · Impresso em ${new Date().toLocaleDateString('pt-BR')}</div>
     </div>
 
     <div class="print-section">
@@ -2625,8 +2665,8 @@ function buildPrintReport(p, history, exams){
     <div class="print-section">
       <h2>Balanço do último plantão</h2>
       <div class="print-stat-grid">
-        <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h)` : ""}</span>${Math.abs(latest.diurese)} mL</div>
-        ${(latest.drenos||[]).filter(d=>Number(d.total) > 0).map(d=>`<div><span class="k">${d.label}</span>${d.total} mL</div>`).join("")}
+        <div><span class="k">Diurese${latest.horas ? ` (${latest.horas}h)` : ""}</span>${latest.diurese !== "" && latest.diurese != null ? Math.abs(latest.diurese) + " mL" : "—"}</div>
+        ${(latest.drenos||[]).filter(d=>Number(d.total) > 0).map(d=>`<div><span class="k">${escHtml(d.label)}</span>${escHtml(d.total)} mL</div>`).join("")}
         ${Number(latest.hd) > 0 ? `<div><span class="k">Hemodiálise (UF)</span>${latest.hd} mL</div>` : ""}
         <div><span class="k">Balanço hídrico</span>${latest.balanco>=0?'+':''}${latest.balanco} mL</div>
         <div><span class="k">FC</span>${latest.fc.min}–${latest.fc.max} bpm</div>
@@ -2677,7 +2717,15 @@ function compararLeito(a, b){
   return String(a||"").localeCompare(String(b||""), "pt-BR", {numeric:true, sensitivity:"base"});
 }
 
-async function renderPatients(){
+// Uma renderização por vez: duas chamadas sobrepostas (ex.: abertura + reconexão
+// da gravação) limpavam a lista juntas e depois cada uma acrescentava todos os
+// cartões, duplicando os pacientes na tela.
+let renderChain = Promise.resolve();
+function renderPatients(){
+  renderChain = renderChain.then(()=> renderPatientsNow()).catch(e=> console.error(e));
+  return renderChain;
+}
+async function renderPatientsNow(){
   await unirDuplicados();
   const container = document.getElementById("patients");
   const emptyMsg = document.getElementById("emptyMsg");
@@ -2699,7 +2747,7 @@ async function renderPatients(){
     const staleHtml = horasSem > 72
       ? `<div class="stale">Sem registros há ${Math.floor(horasSem/24)} dias. Se o paciente saiu da UTI, use Alta para apagar os dados e o vínculo do código.</div>`
       : "";
-    const totalDiurese = history.reduce((a,r)=>a+(r.diurese||0),0);
+    const totalDiurese = history.reduce((a,r)=>a+Math.abs(Number(r.diurese)||0),0);
     const totalBalanco = history.reduce((a,r)=>a+(r.balanco||0),0);
 
     const block = document.createElement("div");
@@ -2708,17 +2756,17 @@ async function renderPatients(){
     const latestIdx = history.length - 1;
     const latest = history[latestIdx];
     const recHead = (r, realIdx) => `
-      <div class="rec-head"><span class="rec-date">Plantão ${r.dataBal}</span>
+      <div class="rec-head"><span class="rec-date">Plantão ${escHtml(r.dataBal)}</span>
         <span class="actions"><button class="del-btn copy-record" data-id="${p.id}" data-idx="${realIdx}">Copiar</button>
         <button class="quiet danger del-btn del-record" data-id="${p.id}" data-idx="${realIdx}">Excluir</button></span></div>`;
     const recAlerts = r => { const al = getAlerts(r); return (al.length ? `<div>${al.map(a=>`<span class="alert-chip alert-${a.level}">${a.text}</span>`).join('')}</div>` : "")
       + ((r.implausible && r.implausible.length) ? `<div class="hint">${r.implausible.length} valor(es) impossível(is) ignorado(s) (provável erro de digitação no MV).</div>` : ""); };
     block.innerHTML = `
       <div class="pt-head">
-        <div class="leito"><small>Leito</small>${p.leito || "—"}</div>
+        <div class="leito"><small>Leito</small>${escHtml(p.leito || "—")}</div>
         <div class="pt-id">
-          <div class="name">${p.nome}</div>
-          <div class="meta">${p.atend ? "Atend. " + p.atend + ", " : ""}código ${p.cod || "—"}</div>
+          <div class="name">${escHtml(p.nome)}</div>
+          <div class="meta">${p.atend ? "Atend. " + escHtml(p.atend) + ", " : ""}código ${p.cod || "—"}</div>
         </div>
         ${latest ? `<div class="kpi"><small>Último balanço</small><b class="${latest.balanco<0?'neg':'pos'}">${latest.balanco>=0?'+':''}${latest.balanco} mL</b></div>
         <div class="kpi"><small>Acumulado (${history.length})</small><b class="${totalBalanco<0?'neg':'pos'}">${totalBalanco>=0?'+':''}${totalBalanco.toFixed(0)} mL</b></div>
@@ -2779,6 +2827,8 @@ async function renderPatients(){
     btn.addEventListener("click", async ()=>{
       const id = btn.dataset.id, idx = parseInt(btn.dataset.idx);
       let history = JSON.parse(await storeGet("hist_" + id) || "[]");
+      const rec = history[idx];
+      if(!rec || !confirm(`Excluir o balanço do plantão ${rec.dataBal || ""}?`)) return;
       history.splice(idx,1);
       await storeSet("hist_" + id, JSON.stringify(history));
       renderPatients();
@@ -2805,6 +2855,8 @@ async function renderPatients(){
     btn.addEventListener("click", async (ev)=>{
       ev.preventDefault(); ev.stopPropagation();
       const list = JSON.parse(await storeGet("exam_" + btn.dataset.id) || "[]");
+      const ex = list[parseInt(btn.dataset.idx)];
+      if(!ex || !confirm(`Excluir os exames da coleta ${ex.coleta || ""}?`)) return;
       list.splice(parseInt(btn.dataset.idx), 1);
       await storeSet("exam_" + btn.dataset.id, JSON.stringify(list));
       renderPatients();
