@@ -1012,13 +1012,13 @@ function isExamPdf(lineObjects){
 // ---------- Gasometria ----------
 // Rótulos (texto normalizado, início da linha). Mais específico primeiro.
 const GASO_PARAMS = [
-  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)\b(?!\s*URIN)/],
-  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))\b/],
-  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))\b/],
+  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)(?![A-Z0-9])(?!\s*URIN)/],
+  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))(?![A-Z0-9])/],
+  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))(?![A-Z0-9])/],
   ["HCO3", /^(HCO3|BICARBONATO)(?!\S*\s*(STD|PADRAO|STANDARD))/],
-  ["BE",   /^(BE|B\.E\.?|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)\b/],
-  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))\b/],   // exige O2: não confundir com saturação de transferrina
-  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)\b/]
+  ["BE",   /^(B\.\s?E\.?|BE|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)(?![A-Z0-9])/],
+  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))(?![A-Z0-9])/],   // exige O2: não confundir com saturação de transferrina
+  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)(?![A-Z0-9])/]
 ];
 // Valor da linha do rótulo: o número logo após o rótulo (ou após ":"); se a
 // linha só tem o rótulo, o primeiro número da linha seguinte.
@@ -1033,12 +1033,19 @@ function gasoValor(N, i, re){
   return v ? v[1].replace(/\s+/g,"").replace(/^\+/,"") : null;
 }
 // Lê os parâmetros de um trecho de linhas normalizadas. Retorna {PH:"7,21", ...}.
+// Linha de valor de referência: depois do ":" vem "De x a y" ou "> x"/"< x".
+// (Quando resultado e referência caem na mesma linha, o resultado vem primeiro.)
+function gasoEhReferencia(t, re){
+  let rest = t.slice(t.match(re)[0].length);
+  rest = rest.includes(":") ? rest.slice(rest.indexOf(":") + 1) : rest.replace(/^[\s.]+/,"");
+  return /^\s*(DE\s|[<>])/.test(rest);
+}
 function gasoScan(N){
   const out = {};
   for(let i=0;i<N.length;i++){
-    const t = N[i].trim().replace(/^[*•\-\s]+/,"");
+    const t = N[i].trim().replace(/^[*•%\-\s]+/,"");
     for(const [k, re] of GASO_PARAMS){
-      if(out[k] != null || !re.test(t)) continue;
+      if(out[k] != null || !re.test(t) || gasoEhReferencia(t, re)) continue;
       const v = gasoValor([...N.slice(0,i), t, ...N.slice(i+1)], i, re);
       if(v != null){ out[k] = v; break; }
     }
@@ -1382,11 +1389,14 @@ function parseExames(lineObjects){
   const isNoise = t => /^(PACIENTE:|REGISTRO:|CONVENIO:|N. ATENDIMENTO|DATA DA LIBERA|LOCAL DE ENTRADA|ASSINADO ELETRONICAMENTE|OS EXAMES LABORATORIAIS|FISIOLOGICAS|OS RESULTADOS COM|SE NECESSARIO|AVENIDA|CEP:|CNPJ)/.test(t) || /CRB[MF]\s*\d+\s*$/.test(t) || /^[¯_\-\s]+$/.test(t);
 
   // Blocos: título = última linha "útil" antes de "Material".
+  // "Valor(es) de Referência:" (coluna da direita) fica entre o título e o Material
+  // em alguns laudos (ex.: gasometria) — não é título.
+  const naoTitulo = t => isNoise(t) || !t.trim() || /^VALOR(\(ES\)|ES)? DE REFERENCIA/.test(t.trim());
   const starts = [];
   for(let i=0;i<N.length;i++){
     if(/^MATERIAL\b/.test(N[i])){
       let j = i-1;
-      while(j>=0 && isNoise(N[j])) j--;
+      while(j>=0 && naoTitulo(N[j])) j--;
       if(j>=0) starts.push(j);
     }
   }
