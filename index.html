@@ -204,6 +204,10 @@
   .tile.fluid{ border-color:var(--soro); } .tile.pam{ border-color:var(--ch-pam); } .tile.fc{ border-color:var(--ch-fc); }
   .tile.sat{ border-color:var(--ch-sat); } .tile.temp{ border-color:var(--ch-temp); } .tile.glic{ border-color:var(--ch-diu); }
   .hint{ font-size:12px; color:var(--muted); margin-top:4px; }
+  .rec-tiles [hidden]{ display:none !important; }
+  .tile[data-param]{ cursor:pointer; }
+  .hourly{ cursor:pointer; margin:6px 0 8px; }
+  .hourly-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   table.exam-table{ border-collapse:collapse; font-size:12.5px; width:100%; }
   table.exam-table th{ font-weight:600; color:var(--muted); text-align:right; padding:2px 6px; }
   table.exam-table td{ text-align:right; padding:2px 6px; border-top:1px solid var(--rule); }
@@ -576,7 +580,9 @@ const PLAUSIBLE_RANGES = {
   pam:  [15, 200],   // mmHg
   sat:  [40, 100],   // %
   temp: [25, 43],    // °C
-  glic: [10, 1000]   // mg/dL
+  glic: [10, 1000],  // mg/dL
+  pas:  [30, 300],   // mmHg
+  pad:  [10, 200]    // mmHg
 };
 
 function filterPlausible(points, range){
@@ -901,6 +907,14 @@ function parseBalanco(lineObjects){
   const satValid = processVital("SatO2", satSeries, ["SPO2","SATO2"], PLAUSIBLE_RANGES.sat);
   const tempValid = processVital("Temp", tempSeries, ["TEMPERATURA"], PLAUSIBLE_RANGES.temp);
   const glicValid = processVital("Glicemia", glicSeries, ["GLICEMIA"], PLAUSIBLE_RANGES.glic);
+  // PAS e PAD: só para a visão hora a hora (sem fallback por texto: precisa da hora).
+  const paSerie = (label, keys, range) => {
+    const {valid, excluded} = filterPlausible(extractSeries(lineObjects, keys), range);
+    excluded.forEach(e => implausible.push({param: label, hour: e.hour, value: e.value}));
+    return valid;
+  };
+  const pasValid = paSerie("PAS", ["SISTOLICA","SISTÓLICA","P.A.S","PA SIST","PAS -","PAS(","PAS:"], PLAUSIBLE_RANGES.pas);
+  const padValid = paSerie("PAD", ["DIASTOLICA","DIASTÓLICA","P.A.D","PA DIAST","PAD -","PAD(","PAD:"], PLAUSIBLE_RANGES.pad);
 
   const fc = minMaxFromSeries(fcValid);
   const fr = minMaxFromSeries(frValid);
@@ -932,7 +946,7 @@ function parseBalanco(lineObjects){
   if(evacVol != null) evacVol = Math.round(evacVol);
 
   const series = {
-    fc: fcValid, fr: frValid, pam: pamValid, sat: satValid, temp: tempValid, glic: glicValid,
+    fc: fcValid, fr: frValid, pam: pamValid, pas: pasValid, pad: padValid, sat: satValid, temp: tempValid, glic: glicValid,
     nora: noraSeries, diureseHourly, ganhosHourly, perdasHourly
   };
 
@@ -2285,24 +2299,71 @@ function buildRecordTiles(r){
   const arr = k => seriesToHourArray(s[k]);
   const spark = (k, color) => (s[k]||[]).length ? sparklineSVG(arr(k), {color, width:120, height:26, compact:true}) : "";
   const rng = (o, u) => (o && o.min !== "" && o.min != null) ? `${o.min}–${o.max}<span> ${u}</span>` : "—";
-  const t = (cls, label, val, chart) => `<div class="tile ${cls}"><div class="tl">${label}</div><div class="tv">${val}</div>${chart || ""}</div>`;
+  const views = buildHourlyViews(r);
+  const t = (cls, label, val, chart, param) => `<div class="tile ${cls}"${param && views[param] ? ` data-param="${param}" title="Ver hora a hora"` : ""}><div class="tl">${label}</div><div class="tv">${val}</div>${chart || ""}</div>`;
   const tiles = [
-    t("fluid", "Balanço", `<b class="${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco}</b><span> mL</span>`),
-    t("fluid", "Diurese" + (r.horas ? ` (${r.horas}h)` : ""), `${Math.abs(r.diurese)}<span> mL</span>`)
+    t("fluid", "Balanço", `<b class="${r.balanco<0?'neg':'pos'}">${r.balanco>=0?'+':''}${r.balanco}</b><span> mL</span>`, "", "balanco"),
+    t("fluid", "Diurese" + (r.horas ? ` (${r.horas}h)` : ""), `${Math.abs(r.diurese)}<span> mL</span>`, "", "diurese")
   ];
   (r.drenos||[]).forEach(d=> tiles.push(t("fluid", d.label, `${d.total}<span> mL</span>`)));
   if(r.hd !== "" && r.hd != null) tiles.push(t("fluid", "Hemodiálise", `${r.hd}<span> mL</span>`));
   tiles.push(
-    t("pam", "PAM", rng(r.pam,"mmHg"), spark("pam","#E0564A")),
-    t("fc", "FC", rng(r.fc,"bpm"), spark("fc","#3BA776")),
-    t("sat", "SatO2", rng(r.sat,"%"), spark("sat","#23A3BF")),
-    t("temp", "Temp", rng(r.temp,"°C"), spark("temp","#D08A1E")),
-    t("", "FR", rng(r.fr,"irpm"), spark("fr","#8A9AA5")),
-    t("glic", "Glicemias", (r.glic||[]).length ? r.glic.join(", ") : "—", spark("glic","#8C7FD0")),
+    t("pam", "PAM", rng(r.pam,"mmHg"), spark("pam","#E0564A"), "pam"),
+    t("fc", "FC", rng(r.fc,"bpm"), spark("fc","#3BA776"), "fc"),
+    t("sat", "SatO2", rng(r.sat,"%"), spark("sat","#23A3BF"), "sat"),
+    t("temp", "Temp", rng(r.temp,"°C"), spark("temp","#D08A1E"), "temp"),
+    t("", "FR", rng(r.fr,"irpm"), spark("fr","#8A9AA5"), "fr"),
+    t("glic", "Glicemias", (r.glic||[]).length ? r.glic.join(", ") : "—", spark("glic","#8C7FD0"), "glic"),
     t("", "Dor / Evacuação", `${r.dorSim || "—"} / ${evacText(r)}`)
   );
-  return `<div class="tiles">${tiles.join("")}</div>`;
+  return `<div class="rec-tiles"><div class="tiles">${tiles.join("")}</div>${Object.values(views).join("")}</div>`;
 }
+
+// Controle hora a hora de cada parâmetro (vem do PDF e fica salvo no balanço).
+// Clicar no bloco troca os blocos pela tabela; clicar na tabela volta.
+function buildHourlyViews(r){
+  const s = r.series || {};
+  const fmt = v => v == null ? "·" : String(Math.round(v*10)/10).replace(".", ",");
+  const mapa = serie => { const m = {}; (serie||[]).forEach(p=>{ m[p.hour] = p.value; }); return m; };
+  const view = (param, titulo, cols) => {
+    const maps = cols.map(c => mapa(c.serie));
+    const horas = HOURS_ORDER.filter(h => maps.some(m => m[h] != null));
+    if(!horas.length) return "";
+    const tabela = hs => `<table class="exam-table"><tr><th style="text-align:left;">Hora</th>${cols.map(c=>`<th>${c.label}</th>`).join("")}</tr>${hs.map(h=>`<tr><td class="k">${h.slice(0,2)}h</td>${maps.map(m=>`<td>${fmt(m[h])}</td>`).join("")}</tr>`).join("")}</table>`;
+    const metade = horas.length > 12 ? Math.ceil(horas.length/2) : horas.length;
+    return `<div class="hourly" data-view="${param}" hidden title="Clique para voltar">
+      <div class="col-head"><span>${titulo} — hora a hora</span><span class="hint" style="margin:0; font-weight:400;">clique para voltar</span></div>
+      <div class="${horas.length > metade ? "hourly-grid" : ""}">${tabela(horas.slice(0, metade))}${horas.length > metade ? tabela(horas.slice(metade)) : ""}</div></div>`;
+  };
+  const absS = serie => (serie||[]).map(p=>({hour:p.hour, value:Math.abs(p.value)}));
+  const g = mapa(s.ganhosHourly), pe = mapa(absS(s.perdasHourly));
+  const balHora = HOURS_ORDER.filter(h => g[h] != null || pe[h] != null).map(h=>({hour:h, value:(g[h]||0) - (pe[h]||0)}));
+  const out = {
+    pam:  view("pam", "Pressão arterial (mmHg)", [{label:"PAS", serie:s.pas}, {label:"PAD", serie:s.pad}, {label:"PAM", serie:s.pam}]),
+    fc:   view("fc", "FC (bpm)", [{label:"FC", serie:s.fc}]),
+    sat:  view("sat", "SatO2 (%)", [{label:"SatO2", serie:s.sat}]),
+    temp: view("temp", "Temperatura (°C)", [{label:"Temp", serie:s.temp}]),
+    fr:   view("fr", "FR (irpm)", [{label:"FR", serie:s.fr}]),
+    glic: view("glic", "Glicemia (mg/dL)", [{label:"Glicemia", serie:s.glic}]),
+    diurese: view("diurese", "Diurese (mL)", [{label:"Diurese", serie:absS(s.diureseHourly)}]),
+    balanco: view("balanco", "Balanço (mL)", [{label:"Ganhos", serie:s.ganhosHourly}, {label:"Perdas", serie:absS(s.perdasHourly)}, {label:"Balanço", serie:balHora}])
+  };
+  Object.keys(out).forEach(k=>{ if(!out[k]) delete out[k]; });
+  return out;
+}
+document.addEventListener("click", e=>{
+  const wrap = e.target.closest(".rec-tiles");
+  if(!wrap) return;
+  const tile = e.target.closest(".tile[data-param]");
+  if(tile){
+    const v = wrap.querySelector(`.hourly[data-view="${tile.dataset.param}"]`);
+    if(!v) return;
+    wrap.querySelector(".tiles").hidden = true; v.hidden = false;
+    return;
+  }
+  const hv = e.target.closest(".hourly");
+  if(hv){ hv.hidden = true; wrap.querySelector(".tiles").hidden = false; }
+});
 
 function buildTrendSection(history){
   if(history.length < 2) return "";
