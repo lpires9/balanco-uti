@@ -1076,7 +1076,9 @@ const EXAM_ABBR = [
 const EXAM_LINES = [["hemato"],["renal","eletro"],["hep"],["coag"],["infl"],["gaso"],["outros"]];
 const EXAM_KEY_ORDER = ["HB","HT","LEUCO","PLAQ","BAST","UR","CR","TFG","NA","K","MG","CA","CAI","P","CL",
   "BT","BD","BI","TGO","TGP","FA","GGT","ALB","AMIL","LIP","TAP","ATV","INR","TTPA","RATIO","FIBRIN","DD",
-  "PCR","PCT","LAC","TROPO","CKMB","CPK","DHL","BNP"];
+  "PCR","PCT","PH","PCO2","PO2","HCO3","BE","SAT","LAC","TROPO","CKMB","CPK","DHL","BNP"];
+// Gasometria arterial vira linhas próprias na tabela de exames; venosa ganha " V".
+const GASO_TAB_KEYS = ["PH","PCO2","PO2","HCO3","BE","SAT"];
 
 // "13056,8" / "461000" / "<0,040" → string as printed; num → Number.
 function examNum(str){
@@ -1120,11 +1122,17 @@ const EXAM_LIMITS = {
   LAC:  {high:2.0, critHigh:4.0},
   PCT:  {high:2.0, critHigh:10.0},
   GLIC: {critLow:60, low:70, high:250, critHigh:400},
-  DD:   {high:5000}
+  DD:   {high:5000},
+  PH:   {critLow:7.20, low:7.35, high:7.45, critHigh:7.55},
+  PCO2: {low:35, high:45, critHigh:70},
+  PO2:  {critLow:50, low:60},
+  HCO3: {critLow:12, low:22, high:26},
+  BE:   {low:-2, high:2},
+  SAT:  {critLow:85, low:92}
 };
 const EXAM_NAMES = {K:"Potássio",NA:"Sódio",MG:"Magnésio",CAI:"Cálcio iônico",CA:"Cálcio",P:"Fósforo",HB:"Hemoglobina",
   PLAQ:"Plaquetas",LEUCO:"Leucócitos",BAST:"Bastonetes",CR:"Creatinina",UR:"Ureia",TFG:"TFG",INR:"INR",BT:"Bilirrubina total",
-  LAC:"Lactato",PCT:"Procalcitonina",GLIC:"Glicose",DD:"D-dímero",TROPO:"Troponina",PCR:"PCR"};
+  LAC:"Lactato",PCT:"Procalcitonina",PH:"pH",PCO2:"pCO2",PO2:"pO2",HCO3:"HCO3",BE:"BE",SAT:"SatO2",GLIC:"Glicose",DD:"D-dímero",TROPO:"Troponina",PCR:"PCR"};
 
 function examLevel(key, num){
   const L = EXAM_LIMITS[key];
@@ -1144,17 +1152,31 @@ function dayDiff(a, b){ const x = dateBR(a), y = dateBR(b); return (x && y) ? Ma
 // Valores dos PDFs salvos têm prioridade; "Resultados Anteriores" do laudo preenchem dias faltantes.
 function examSeries(entries){
   const map = {};
-  const put = (key, date, num, value, src) => {
+  // Mais de uma coleta no mesmo dia: fica a mais recente (lista ordenada por coleta);
+  // as anteriores vão em "outros" (aparecem ao passar o mouse na tabela).
+  const put = (key, date, num, value, src, hora) => {
     if(num == null || !date) return;
     const byDate = (map[key] = map[key] || {});
-    if(byDate[date] && byDate[date].src === "pdf" && src === "lab") return;
-    byDate[date] = {date, num, value, src};
+    const old = byDate[date];
+    if(old && old.src === "pdf" && src === "lab") return;
+    const outros = old && old.src === "pdf" && src === "pdf" ? (old.outros||[]).concat([`${old.value}${old.hora ? " às " + old.hora : ""}`]) : [];
+    byDate[date] = {date, num, value, src, hora, outros};
   };
   (entries||[]).forEach(e=>{
     const day = String(e.coleta||"").split(" ")[0];
+    const hora = String(e.coleta||"").split(" ")[1] || "";
     (e.items||[]).forEach(it=>{
+      if(/^GASO/.test(it.key)){
+        const suf = /^GASO VEN/.test(it.key) ? " V" : "";
+        String(it.value).split("|").forEach(par=>{
+          const m = par.trim().match(/^([A-Z0-9]+)\s+(.+)$/);
+          if(!m || !GASO_TAB_KEYS.includes(m[1])) return;
+          put(m[1] + suf, day, examNumBR(m[2]), m[2].trim(), "pdf", hora);
+        });
+        return;
+      }
       const num = it.num != null ? it.num : examNumBR(it.value);
-      put(it.key, day, num, it.key === "LEUCO" ? thousands(num) : String(it.value).split(" (")[0], "pdf");
+      put(it.key, day, num, it.key === "LEUCO" ? thousands(num) : String(it.value).split(" (")[0], "pdf", hora);
       (it.prevs||[]).forEach(pv=> put(it.key, pv.date, pv.num, pv.value, "lab"));
     });
   });
@@ -1358,7 +1380,7 @@ function buildExamTable(entries, opts){
   if(!opts.full){
     const series = examSeries(entries);
     const all = EXAM_KEY_ORDER.filter(k=>series[k]).concat(Object.keys(series).filter(k=>!EXAM_KEY_ORDER.includes(k) && !/^GASO/.test(k)));
-    const main = all.filter(k => UNIT_EX_KEYS.includes(k) || series[k].some(x => examLevel(k, x.num)));
+    const main = all.filter(k => UNIT_EX_KEYS.includes(k) || GASO_TAB_KEYS.includes(k.replace(/ V$/,"")) || series[k].some(x => examLevel(k, x.num)));
     const rest = all.filter(k => !main.includes(k));
     return buildExamTableKeys(entries, main)
       + (rest.length ? `<details class="mini"><summary>Ver todos os exames (+${rest.length}: ${rest.join(", ")})</summary>${buildExamTableKeys(entries, all)}</details>` : "")
@@ -1375,10 +1397,13 @@ function buildExamTableKeys(entries, onlyKeys){
   const cell = (k, d) => {
     const v = (series[k]||[]).find(x=>x.date === d);
     if(!v) return `<td class="nd">·</td>`;
-    const lvl = examLevel(k, v.num);
+    const lvl = examLevel(k.replace(/ V$/,"") === k ? k : "", v.num);   // venosa: sem faixa arterial
     const color = lvl === "crit" ? "color:var(--crit); font-weight:700;" : lvl === "warn" ? "color:var(--warn); font-weight:700;" : "";
     const lab = v.src === "lab" ? "font-style:italic; opacity:.75;" : "";
-    return `<td style="${color}${lab}" title="${v.src === "lab" ? "Informado como resultado anterior no laudo" : ""}">${v.value}</td>`;
+    const mais = (v.outros||[]).length;
+    const tip = v.src === "lab" ? "Informado como resultado anterior no laudo"
+      : mais ? `${v.value}${v.hora ? " às " + v.hora : ""} (mais recente). Antes no mesmo dia: ${v.outros.join("; ")}` : (v.hora ? "Coleta às " + v.hora : "");
+    return `<td style="${color}${lab}" title="${tip}">${v.value}${mais ? "<sup>+" + mais + "</sup>" : ""}</td>`;
   };
   return `<div style="overflow-x:auto;">
     <table class="exam-table">
@@ -1661,9 +1686,24 @@ document.getElementById("examSaveBtn").addEventListener("click", async ()=>{
   const patientId = resolvePatientId(JSON.parse(await storeGet("index_pacientes") || "[]"), ex.atend, nome);
   let list = JSON.parse(await storeGet("exam_" + patientId) || "[]");
   const text = document.getElementById("examText").value.toUpperCase();
-  // mesmo pedido/coleta salvo de novo substitui o anterior
-  list = list.filter(x => x.coleta !== ex.coleta);
-  list.push({coleta: ex.coleta, items: ex.items, text, savedAt: new Date().toISOString()});
+  // Mesma coleta (data e hora iguais):
+  //  - mesmos exames → é o mesmo laudo de novo: substitui;
+  //  - exames diferentes (ex.: laudo sem hora de coleta, gaso e bioquímica no mesmo
+  //    dia) → junta os dois, sem apagar o que já estava salvo.
+  const igual = list.find(x => x.coleta === ex.coleta);
+  const chaves = it => (it||[]).map(i=>i.key).sort().join(",");
+  if(igual && chaves(igual.items) !== chaves(ex.items)){
+    const novas = new Set(ex.items.map(i=>i.key));
+    const items = igual.items.filter(i => !novas.has(i.key)).concat(ex.items);
+    const corpo = t => String(t||"").split("\n").filter(l => !/^# EXAMES/.test(l)).join("\n");
+    const head = String(text).split("\n").find(l => /^# EXAMES/.test(l)) || "";
+    igual.items = items;
+    igual.text = [head, corpo(igual.text), corpo(text)].filter(Boolean).join("\n");
+    igual.savedAt = new Date().toISOString();
+  } else {
+    list = list.filter(x => x.coleta !== ex.coleta);
+    list.push({coleta: ex.coleta, items: ex.items, text, savedAt: new Date().toISOString()});
+  }
   list.sort((a,b)=> coletaKey(a.coleta).localeCompare(coletaKey(b.coleta)));
   await storeSet("exam_" + patientId, JSON.stringify(list));
   let index = JSON.parse(await storeGet("index_pacientes") || "[]");
