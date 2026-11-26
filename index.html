@@ -275,8 +275,9 @@
     .u-meta{ font-size:8pt; color:#444; margin-left:auto; }
     .u-body{ display:flex; gap:3mm; }
     table.u-ctrl{ width:54mm; min-width:54mm; max-width:54mm; flex:none; border-collapse:collapse; font-size:8.5pt; table-layout:fixed; }
-    table.u-ctrl td.wrap{ white-space:normal; line-height:1.15; max-height:7mm; overflow:hidden; font-size:7.8pt; }
-    table.u-ctrl td{ padding:0.4mm 1mm; border-bottom:0.4pt solid #ddd; white-space:nowrap; overflow:hidden; max-width:34mm; text-overflow:ellipsis; }
+    table.u-ctrl td.wrap{ white-space:normal; line-height:1.15; overflow:hidden; font-size:7.8pt; }
+    table.u-ctrl td.wrap > div{ max-height:6.4mm; overflow:hidden; }   /* td ignora max-height: limita no div (2 linhas) */
+    table.u-ctrl td{ padding:0.2mm 1mm; border-bottom:0.4pt solid #ddd; white-space:nowrap; overflow:hidden; max-width:34mm; text-overflow:ellipsis; }
     table.u-ctrl td:first-child{ color:#555; }
     table.u-ctrl td.big{ font-weight:bold; font-size:10pt; }
     table.u-ex{ flex:1; width:100%; border-collapse:collapse; font-size:7.8pt; table-layout:fixed; }
@@ -285,7 +286,13 @@
     table.u-ex td:first-child, table.u-ex th:first-child{ width:9mm; font-weight:bold; }
     table.u-ex td.warn{ font-weight:bold; }
     table.u-ex td.crit{ font-weight:bold; text-decoration:underline; }
-    .u-crit{ font-size:7.8pt; margin-top:1.2mm; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .u-sofa{ font-size:8pt; margin-top:0.8mm; white-space:nowrap; overflow:hidden; }
+    .u-sofa .slot{ display:inline-block; min-width:6mm; border-bottom:0.6pt solid #555; text-align:center; }
+    table.print-sofa{ border-collapse:collapse; font-size:11px; margin-top:4px; }
+    table.print-sofa th, table.print-sofa td{ border:1px solid #bbb; padding:2px 8px; text-align:center; }
+    table.print-sofa td:first-child, table.print-sofa th:first-child{ text-align:left; }
+    table.print-sofa td.slot{ min-width:28px; }
+    .u-crit{ font-size:7.8pt; margin-top:0.4mm; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   }
 </style>
 <div id="printArea"></div>
@@ -1005,13 +1012,13 @@ function isExamPdf(lineObjects){
 // ---------- Gasometria ----------
 // Rótulos (texto normalizado, início da linha). Mais específico primeiro.
 const GASO_PARAMS = [
-  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)\b(?!\s*URIN)/],
-  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))\b/],
-  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))\b/],
+  ["PH",   /^(PH|POTENCIAL HIDROGENIONICO)(?![A-Z0-9])(?!\s*URIN)/],
+  ["PCO2", /^(P\s?A?CO2|PCO\s2|PRESSAO PARCIAL DE (GAS CARBONICO|CO2))(?![A-Z0-9])/],
+  ["PO2",  /^(P\s?A?O2|PO\s2|PRESSAO PARCIAL DE (OXIGENIO|O2))(?![A-Z0-9])/],
   ["HCO3", /^(HCO3|BICARBONATO)(?!\S*\s*(STD|PADRAO|STANDARD))/],
-  ["BE",   /^(BE|B\.E\.?|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)\b/],
-  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))\b/],   // exige O2: não confundir com saturação de transferrina
-  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)\b/]
+  ["BE",   /^(B\.\s?E\.?|BE|ABE|BEECF|BE\s?ECF|BE\s?B|EXCESSO DE BASES?|BASE EXCESS|DEFICIT DE BASES?)(?![A-Z0-9])/],
+  ["SAT",  /^(S\s?A?O2|SV?O2|SAT(URACAO)?\s*(DE\s*)?(O2|OXIGENIO|HB))(?![A-Z0-9])/],   // exige O2: não confundir com saturação de transferrina
+  ["LAC",  /^(LACTATO|ACIDO LATICO|LAC)(?![A-Z0-9])/]
 ];
 // Valor da linha do rótulo: o número logo após o rótulo (ou após ":"); se a
 // linha só tem o rótulo, o primeiro número da linha seguinte.
@@ -1026,12 +1033,19 @@ function gasoValor(N, i, re){
   return v ? v[1].replace(/\s+/g,"").replace(/^\+/,"") : null;
 }
 // Lê os parâmetros de um trecho de linhas normalizadas. Retorna {PH:"7,21", ...}.
+// Linha de valor de referência: depois do ":" vem "De x a y" ou "> x"/"< x".
+// (Quando resultado e referência caem na mesma linha, o resultado vem primeiro.)
+function gasoEhReferencia(t, re){
+  let rest = t.slice(t.match(re)[0].length);
+  rest = rest.includes(":") ? rest.slice(rest.indexOf(":") + 1) : rest.replace(/^[\s.]+/,"");
+  return /^\s*(DE\s|[<>])/.test(rest);
+}
 function gasoScan(N){
   const out = {};
   for(let i=0;i<N.length;i++){
-    const t = N[i].trim().replace(/^[*•\-\s]+/,"");
+    const t = N[i].trim().replace(/^[*•%\-\s]+/,"");
     for(const [k, re] of GASO_PARAMS){
-      if(out[k] != null || !re.test(t)) continue;
+      if(out[k] != null || !re.test(t) || gasoEhReferencia(t, re)) continue;
       const v = gasoValor([...N.slice(0,i), t, ...N.slice(i+1)], i, re);
       if(v != null){ out[k] = v; break; }
     }
@@ -1375,11 +1389,14 @@ function parseExames(lineObjects){
   const isNoise = t => /^(PACIENTE:|REGISTRO:|CONVENIO:|N. ATENDIMENTO|DATA DA LIBERA|LOCAL DE ENTRADA|ASSINADO ELETRONICAMENTE|OS EXAMES LABORATORIAIS|FISIOLOGICAS|OS RESULTADOS COM|SE NECESSARIO|AVENIDA|CEP:|CNPJ)/.test(t) || /CRB[MF]\s*\d+\s*$/.test(t) || /^[¯_\-\s]+$/.test(t);
 
   // Blocos: título = última linha "útil" antes de "Material".
+  // "Valor(es) de Referência:" (coluna da direita) fica entre o título e o Material
+  // em alguns laudos (ex.: gasometria) — não é título.
+  const naoTitulo = t => isNoise(t) || !t.trim() || /^VALOR(\(ES\)|ES)? DE REFERENCIA/.test(t.trim());
   const starts = [];
   for(let i=0;i<N.length;i++){
     if(/^MATERIAL\b/.test(N[i])){
       let j = i-1;
-      while(j>=0 && isNoise(N[j])) j--;
+      while(j>=0 && naoTitulo(N[j])) j--;
       if(j>=0) starts.push(j);
     }
   }
@@ -2398,7 +2415,28 @@ function buildVasoSection(record){
   `;
 }
 
-function buildPrintReport(p, history){
+function buildPrintSofa(exams, history){
+  const serie = sofa2Serie(exams, history).slice(-5);
+  if(!serie.length) return "";
+  const v = x => x == null ? "—" : x;
+  const ult = serie[serie.length-1];
+  const linha = (nome, campo) => `<tr><td>${nome}</td>${serie.map(s=>`<td>${v(s[campo])}</td>`).join("")}<td>${ult.mot[campo] || ""}</td></tr>`;
+  const vazia = nome => `<tr><td>${nome}</td>${serie.map(()=>`<td class="slot"></td>`).join("")}<td style="color:#777;">à beira-leito</td></tr>`;
+  return `
+    <div class="print-section">
+      <h2>SOFA-2</h2>
+      <table class="print-sofa">
+        <tr><th></th>${serie.map(s=>`<th>${s.date.slice(0,5)}</th>`).join("")}<th>Último</th></tr>
+        ${vazia("Cérebro")}${vazia("Respiratório")}${vazia("Cardiovascular")}
+        ${linha("Fígado","figado")}${linha("Rim","rim")}${linha("Hemostasia","hemo")}
+        <tr><td><b>Medido (labs)</b></td>${serie.map(s=>`<td><b>${v(s.total)}</b></td>`).join("")}<td></td></tr>
+        <tr><td><b>Total</b></td>${serie.map(()=>`<td class="slot"></td>`).join("")}<td></td></tr>
+      </table>
+      <div style="font-size:10px; color:#777; margin-top:3px;">Pior valor do dia; dia sem exame repete o último. Rim inclui diurese (se peso informado) e hemodiálise do balanço.</div>
+    </div>`;
+}
+
+function buildPrintReport(p, history, exams){
   const sorted = history.slice().sort((a,b)=>{
     const da = parseDatePtBr(a.dataBal), db = parseDatePtBr(b.dataBal);
     if(!da || !db) return 0;
@@ -2451,6 +2489,8 @@ function buildPrintReport(p, history){
       ${alerts.length ? alerts.map(a=>`<span class="print-alert">⚠ ${a.text}</span>`).join('') : '<div style="font-size:12px; color:#777;">Sem alertas clínicos relevantes neste plantão.</div>'}
       ${implausibleNote}
     </div>
+
+    ${buildPrintSofa(exams || [], history)}
 
     <div class="print-section">
       <h2>Balanço do último plantão</h2>
@@ -2600,7 +2640,8 @@ async function renderPatients(){
       const p = index.find(x=>x.id===id);
       let history = JSON.parse(await storeGet("hist_" + id) || "[]");
       if(!p || !history.length) return;
-      document.getElementById("printArea").innerHTML = buildPrintReport(p, history);
+      const exams = JSON.parse(await storeGet("exam_" + id) || "[]");
+      document.getElementById("printArea").innerHTML = buildPrintReport(p, history, exams);
       window.print();
     });
   });
@@ -2800,9 +2841,9 @@ function buildUnitReport(rows){
     const ctrl = r ? `
       <tr><td>PAM</td><td>${pam}</td></tr>
       <tr><td>Diurese</td><td>${r.diurese !== "" && r.diurese != null ? Math.abs(r.diurese) + " mL" : "—"}</td></tr>
-      ${dren ? `<tr><td>Drenos</td><td class="wrap">${dren}</td></tr>` : ""}
+      ${dren ? `<tr><td>Drenos</td><td class="wrap"><div>${dren}</div></td></tr>` : ""}
       ${Number(r.hd) > 0 ? `<tr><td>Hemodiálise</td><td>${r.hd} mL</td></tr>` : ""}
-      <tr><td>Escape glic.</td><td class="wrap">${glicCell(r)}</td></tr>
+      <tr><td>Escape glic.</td><td class="wrap"><div>${glicCell(r)}</div></td></tr>
       <tr><td>Balanço</td><td class="big">${r.balanco >= 0 ? "+" : ""}${r.balanco} mL</td></tr>`
       : `<tr><td colspan="2">Sem balanço salvo</td></tr>`;
     const exRows = days.map(d => `<tr><td>${d.slice(0,5)}</td>${UNIT_EX_KEYS.map(k => {
@@ -2814,7 +2855,10 @@ function buildUnitReport(rows){
       }).join("")}</tr>`).join("");
     const crit = exams.length ? examAlerts(exams).filter(a=>a.level==="crit").map(a=>esc(a.text)) : [];
     const sf = sofa2Serie(exams, history).slice(-1)[0];
-    const sfTxt = sf && sf.total != null ? `<b>SOFA-2 medido ${sf.total}</b> (F ${sf.figado == null ? "—" : sf.figado} · R ${sf.rim == null ? "—" : sf.rim} · H ${sf.hemo == null ? "—" : sf.hemo}, ${sf.date.slice(0,5)})` : "";
+    const sv = v => v == null ? "—" : v;
+    // SOFA-2: medido pelo app + espaços para preencher à mão na visita.
+    const sfTxt = sf && sf.total != null ? `<b>SOFA-2</b> (${sf.date.slice(0,5)}) Fígado ${sv(sf.figado)} · Rim ${sv(sf.rim)} · Hemost. ${sv(sf.hemo)} = <b>${sf.total}</b>
+      &nbsp;|&nbsp; Cérebro <span class="slot"></span> Resp <span class="slot"></span> CV <span class="slot"></span> &nbsp;Total <span class="slot"></span>` : "";
     return `<div class="u-blk">
       <div class="u-head"><span class="u-leito">${esc(p.leito || "—")}</span><span class="u-nome">${esc(p.nome)}</span>
         <span class="u-meta">${p.atend ? "Atend. " + esc(p.atend) + " — " : ""}${r ? "balanço de " + esc(r.dataBal) : ""}</span></div>
@@ -2822,7 +2866,8 @@ function buildUnitReport(rows){
         <table class="u-ctrl"><colgroup><col style="width:19mm"><col></colgroup>${ctrl}</table>
         ${days.length ? `<table class="u-ex"><colgroup><col style="width:9mm">${UNIT_EX_KEYS.map(()=>"<col>").join("")}</colgroup><tr><th></th>${UNIT_EX_KEYS.map(k=>`<th>${k}</th>`).join("")}</tr>${exRows}</table>` : `<div style="font-size:8pt; color:#666;">Sem exames salvos.</div>`}
       </div>
-      <div class="u-crit">${[sfTxt, crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""].filter(Boolean).join(" · ")}</div>
+      ${sfTxt ? `<div class="u-sofa">${sfTxt}</div>` : ""}
+      <div class="u-crit">${crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""}</div>
     </div>`;
   };
 
