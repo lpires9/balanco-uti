@@ -301,7 +301,7 @@
 
 <header class="top">
   <div>
-    <h1>Balanço UTI <small style="font-size:11px; font-weight:400; opacity:.6;">versão 26/11 11h</small></h1>
+    <h1>Balanço UTI</h1>
     <p>Solte o PDF do balanço ou dos exames do MV. Os valores são lidos, organizados por paciente e prontos para copiar no prontuário.</p>
   </div>
   <div class="hoje">Plantão de<b id="hojeData"></b><button class="quiet theme-btn" id="themeBtn"></button></div>
@@ -1298,6 +1298,22 @@ function sofa2Serie(exams, history){
   });
   return out;
 }
+
+// TFG do laudo (vem no bloco da creatinina): menor valor de cada dia, em ordem de data.
+function tfgSerie(exams){
+  const dias = {};
+  (exams||[]).forEach(e=>{
+    const d = String(e.coleta||"").split(" ")[0];
+    (e.items||[]).forEach(it=>{
+      if(it.key !== "TFG" || !dateBR(d)) return;
+      const n = it.num != null ? it.num : examNumBR(it.value);
+      if(n == null || isNaN(n)) return;
+      dias[d] = dias[d] == null ? n : Math.min(dias[d], n);
+    });
+  });
+  return Object.keys(dias).sort((a,b)=> coletaKey(a).localeCompare(coletaKey(b))).map(d=>({date:d, v:dias[d]}));
+}
+const fmtTfg = n => String(Math.round(n*10)/10).replace(".", ",");
 
 function sofa2Texto(s){
   if(!s) return "";
@@ -2431,6 +2447,8 @@ function buildPrintSofa(exams, history){
   const v = x => x == null ? "—" : x;
   const ult = serie[serie.length-1];
   const linha = (nome, campo) => `<tr><td>${nome}</td>${serie.map(s=>`<td>${v(s[campo])}</td>`).join("")}<td>${ult.mot[campo] || ""}</td></tr>`;
+  const tfgMap = Object.fromEntries(tfgSerie(exams).map(x=>[x.date, x.v]));
+  const tfgRow = Object.keys(tfgMap).length ? `<tr><td><b>TFG</b> <small>mL/min/1,73m²</small></td>${serie.map(s=>`<td>${tfgMap[s.date] != null ? fmtTfg(tfgMap[s.date]) : "·"}</td>`).join("")}<td></td></tr>` : "";
   const vazia = nome => `<tr><td>${nome}</td>${serie.map(()=>`<td class="slot"></td>`).join("")}<td style="color:#777;">à beira-leito</td></tr>`;
   return `
     <div class="print-section">
@@ -2441,6 +2459,7 @@ function buildPrintSofa(exams, history){
         ${linha("Fígado","figado")}${linha("Rim","rim")}${linha("Hemostasia","hemo")}
         <tr><td><b>Medido (labs)</b></td>${serie.map(s=>`<td><b>${v(s.total)}</b></td>`).join("")}<td></td></tr>
         <tr><td><b>Total</b></td>${serie.map(()=>`<td class="slot"></td>`).join("")}<td></td></tr>
+        ${tfgRow}
       </table>
       <div style="font-size:10px; color:#777; margin-top:3px;">Pior valor do dia; dia sem exame repete o último. Rim inclui diurese (se peso informado) e hemodiálise do balanço.</div>
     </div>`;
@@ -2866,6 +2885,8 @@ function buildUnitReport(rows){
     const crit = exams.length ? examAlerts(exams).filter(a=>a.level==="crit").map(a=>esc(a.text)) : [];
     const sf = sofa2Serie(exams, history).slice(-1)[0];
     const sv = v => v == null ? "—" : v;
+    const tf = tfgSerie(exams).slice(-1)[0];
+    const tfTxt = tf ? `<b>TFG</b> ${fmtTfg(tf.v)}${sf && tf.date === sf.date ? "" : ` (${tf.date.slice(0,5)})`}` : "";
     // SOFA-2: medido pelo app + espaços para preencher à mão na visita.
     const sfTxt = sf && sf.total != null ? `<b>SOFA-2</b> (${sf.date.slice(0,5)}) Fígado ${sv(sf.figado)} · Rim ${sv(sf.rim)} · Hemost. ${sv(sf.hemo)} = <b>${sf.total}</b>
       &nbsp;|&nbsp; Cérebro <span class="slot"></span> Resp <span class="slot"></span> CV <span class="slot"></span> &nbsp;Total <span class="slot"></span>` : "";
@@ -2876,7 +2897,7 @@ function buildUnitReport(rows){
         <table class="u-ctrl"><colgroup><col style="width:19mm"><col></colgroup>${ctrl}</table>
         ${days.length ? `<table class="u-ex"><colgroup><col style="width:9mm">${UNIT_EX_KEYS.map(()=>"<col>").join("")}</colgroup><tr><th></th>${UNIT_EX_KEYS.map(k=>`<th>${k}</th>`).join("")}</tr>${exRows}</table>` : `<div style="font-size:8pt; color:#666;">Sem exames salvos.</div>`}
       </div>
-      ${sfTxt ? `<div class="u-sofa">${sfTxt}</div>` : ""}
+      ${sfTxt || tfTxt ? `<div class="u-sofa">${[sfTxt, tfTxt].filter(Boolean).join(" &nbsp;|&nbsp; ")}</div>` : ""}
       <div class="u-crit">${crit.length ? "<b>Crítico:</b> " + crit.join("; ") : ""}</div>
     </div>`;
   };
