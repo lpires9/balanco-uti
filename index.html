@@ -301,7 +301,7 @@
 
 <header class="top">
   <div>
-    <h1>Balanço UTI</h1>
+    <h1>Balanço UTI <small style="font-size:11px; font-weight:400; opacity:.6;">versão 26/11 11h</small></h1>
     <p>Solte o PDF do balanço ou dos exames do MV. Os valores são lidos, organizados por paciente e prontos para copiar no prontuário.</p>
   </div>
   <div class="hoje">Plantão de<b id="hojeData"></b><button class="quiet theme-btn" id="themeBtn"></button></div>
@@ -1486,10 +1486,20 @@ function parseExames(lineObjects){
       if(tfg) add("TFG", "TFG", examNum(tfg.raw.replace(/^[^\d]*/,"")), "renal");
     }
   });
-  // Laudo só de gasometria, sem blocos "Material:" (ex.: impresso do gasômetro).
-  if(!gasos.length && !blocks.length && /GASOMETR|GASIMETR/.test(N.join(" "))){
-    const vals = gasoScan(N);
-    if(Object.keys(vals).length >= 2) gasos.push({tipo: N.some(l=>/VENOS/.test(l)) ? "GASO VEN" : "GASO ART", vals});
+  // Rede de segurança: o laudo cita gasometria mas nenhum bloco foi reconhecido como
+  // gasometria (título mal identificado, layout diferente, laudo sem "Material:").
+  // Lê a partir de cada linha "GASOMETRIA ..." até o próximo título de exame.
+  if(!gasos.length){
+    N.forEach((l, i)=>{
+      if(!/^\s*(GASOMETR|GASIMETR)/.test(l)) return;
+      const fim = starts.find(st => st > i + 3) ?? N.length;
+      const trecho = N.slice(i, fim);
+      const vals = gasoScan(trecho);
+      if(Object.keys(vals).length >= 2){
+        const tipo = /VENOS/.test(l) || trecho.some(x=>/^MATERIAL\b.*VENOS/.test(x)) ? "GASO VEN" : "GASO ART";
+        if(!gasos.some(g => gasoTexto(g.vals) === gasoTexto(vals))) gasos.push({tipo, vals});
+      }
+    });
   }
   gasos.forEach((g, i)=>{
     const n = gasos.filter((x,j)=> j < i && x.tipo === g.tipo).length;
